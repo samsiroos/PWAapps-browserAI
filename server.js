@@ -50,11 +50,24 @@ function fail(run, error) { run.status = "failed"; event(run, "error", "Agent st
 async function pageState(page) {
   return page.evaluate(() => {
     const visible = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none"; };
+    document.querySelectorAll("[data-agent-id]").forEach(el => el.removeAttribute("data-agent-id"));
     const nodes = [...document.querySelectorAll("a,button,input,textarea,select,[role=button],[contenteditable=true]")].filter(visible).slice(0, 120);
     nodes.forEach((el, i) => el.setAttribute("data-agent-id", String(i + 1)));
     const controls = nodes.map((el, i) => ({ id: i + 1, tag: el.tagName.toLowerCase(), type: el.getAttribute("type") || "", text: (el.innerText || el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("name") || "").trim().slice(0, 160), value: el.value?.slice?.(0, 80) || "" }));
     return { url: location.href, title: document.title, text: (document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 12000), controls };
   });
+}
+
+async function actionLocator(page, action, control) {
+  if (!action.id) return null;
+  let locator = page.locator(`[data-agent-id="${Number(action.id)}"]:visible`);
+  if (control?.tag) {
+    const tagged = page.locator(`${control.tag}[data-agent-id="${Number(action.id)}"]:visible`);
+    if (await tagged.count()) locator = tagged;
+  }
+  const count = await locator.count();
+  if (!count) throw new Error(`Control ${action.id} is no longer visible.`);
+  return locator.last();
 }
 
 const SYSTEM = `You are an autonomous browser agent controlling Playwright. Return ONLY one JSON object per turn, no markdown. Available actions:
@@ -123,18 +136,23 @@ async function executeRun(run, task) {
       event(run, action.action === "finish" ? "response" : "browser", action.reason || `Step ${step}: ${action.action}`, action.answer || action.question || action.url || action.text || "");
       if (action.action === "finish") { run.status = "completed"; break; }
       if (action.action === "ask_user") { const ok = await approve(run, "Agent needs your input", action.question || "Continue?"); messages.push({ role: "user", content: ok ? "User approved/answered yes." : "User denied/answered no. Choose a safe alternative or finish." }); continue; }
-      const selector = action.id ? `[data-agent-id="${Number(action.id)}"]` : null;
       const control = state.controls.find(item => item.id === Number(action.id));
       const needsApproval = run.config.approvalPolicy === "all" || (run.config.approvalPolicy === "risky" && sensitive(action, control));
       if (needsApproval && !await approve(run, `Allow ${action.action}?`, `${action.reason || "The agent requested this action"}${action.text ? ` — “${action.text.slice(0, 120)}”` : ""}`)) { messages.push({ role: "user", content: "User denied that action. Choose a safe alternative or finish." }); continue; }
-      if (action.action === "navigate") await page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 30000 });
-      else if (action.action === "click" && selector) await page.locator(selector).click({ timeout: 10000 });
-      else if (action.action === "type" && selector) await page.locator(selector).fill(String(action.text || ""), { timeout: 10000 });
-      else if (action.action === "scroll") await page.mouse.wheel(0, action.direction === "up" ? -650 : 650);
-      else if (action.action === "back") await page.goBack({ waitUntil: "domcontentloaded" });
-      else if (action.action === "wait") await page.waitForTimeout(Math.min(Number(action.ms) || 1000, 10000));
-      else throw new Error(`Unsupported or incomplete action: ${action.action}`);
-      await page.waitForTimeout(500);
+      try {
+        if (action.action === "navigate") await page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 30000 });
+        else if (action.action === "click" && action.id) await (await actionLocator(page, action, control)).click({ timeout: 10000 });
+        else if (action.action === "type" && action.id) await (await actionLocator(page, action, control)).fill(String(action.text || ""), { timeout: 10000 });
+        else if (action.action === "scroll") await page.mouse.wheel(0, action.direction === "up" ? -650 : 650);
+        else if (action.action === "back") await page.goBack({ waitUntil: "domcontentloaded" });
+        else if (action.action === "wait") await page.waitForTimeout(Math.min(Number(action.ms) || 1000, 10000));
+        else throw new Error(`Unsupported or incomplete action: ${action.action}`);
+        await page.waitForTimeout(500);
+      } catch (actionError) {
+        const detail = `${action.action} failed: ${actionError.message}`;
+        event(run, "error", "Action failed — retrying", detail);
+        messages.push({ role: "user", content: `${detail}. The page may have changed or the marker may be duplicated. Observe the new state and choose another control or method. Do not stop unless the task is impossible.` });
+      }
     }
     if (run.stopped) { run.status = "stopped"; event(run, "error", "Run stopped", "The user stopped this run."); }
     else if (run.status === "running") { run.status = "completed"; event(run, "response", "Step limit reached", "The agent stopped after 30 steps. Refine the request and run again if needed."); }

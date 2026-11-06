@@ -7,6 +7,8 @@ const providers = {
   pwaapps: { endpoint: "https://licence.pwaapps.com:443/airelay/api/v1", model: "" },
   custom: { endpoint: "", model: "" }
 };
+const rtlPattern = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFC]/;
+function applyDirection(element,text){const rtl=rtlPattern.test(text||"");element.dir=rtl?"rtl":"ltr";element.classList.toggle("rtl",rtl)}
 const demoSteps = [
   ["plan", "Planning the approach", "I’ll search product listings, collect price and rating data, then compare the strongest candidates."],
   ["browser", "Opening search results", "Navigating to a product search and scanning the first page for relevant options."],
@@ -21,7 +23,7 @@ function addStep(kind,title,text){
   const row=document.createElement("div");row.className="timeline-item "+(kind==="response"?"response":kind==="error"?"error":"");
   const symbols={plan:"01",browser:"↗",observe:"◎",compare:"≋",response:"✓",error:"!",question:"?"};
   row.innerHTML=`<div class="timeline-icon">${symbols[kind]||"·"}</div><div class="timeline-content"><span>${kind}</span><h3></h3><p></p></div>`;
-  row.querySelector("h3").textContent=title;row.querySelector("p").textContent=text;$("timeline").appendChild(row);row.scrollIntoView({behavior:"smooth",block:"nearest"});
+  row.querySelector("h3").textContent=title;row.querySelector("p").textContent=text;applyDirection(row.querySelector(".timeline-content"),`${title} ${text}`);$("timeline").appendChild(row);row.scrollIntoView({behavior:"smooth",block:"nearest"});
 }
 function resetRun(){state.stopped=false;$("emptyState").hidden=true;$("timeline").hidden=false;$("timeline").innerHTML="";$("approvalCard").hidden=true;$("stopButton").hidden=false;$("runButton").classList.add("running")}
 function finishRun(){state.running=false;$("stopButton").hidden=true;$("runButton").classList.remove("running");setStatus("","Run complete")}
@@ -61,7 +63,7 @@ async function pollLocalRun(){
   try{
     const response=await fetch(`/api/runs/${state.runId}`);const run=await response.json();if(!response.ok)throw new Error(run.error||"Run unavailable");
     for(const item of run.events||[]){if(!state.seenEvents.has(item.id)){state.seenEvents.add(item.id);addStep(item.kind,item.title,item.text)}}
-    if(run.waiting){setStatus("waiting","Waiting for your approval");$("approvalTitle").textContent=run.waiting.title;$("approvalText").textContent=run.waiting.detail;$("approvalCard").hidden=false}else $("approvalCard").hidden=true;
+    if(run.waiting){setStatus("waiting","Waiting for your approval");$("approvalTitle").textContent=run.waiting.title;$("approvalText").textContent=run.waiting.detail;applyDirection($("approvalCard"),`${run.waiting.title} ${run.waiting.detail}`);$("approvalCard").hidden=false}else $("approvalCard").hidden=true;
     if(["completed","failed","stopped"].includes(run.status)){finishRun();state.runId=null;return}
     setStatus(run.status==="waiting"?"waiting":"active",run.status==="starting"?"Launching browser":"Agent is controlling Chromium");state.pollTimer=setTimeout(pollLocalRun,700);
   }catch(error){addStep("error","Runtime connection lost",error.message);finishRun();state.runId=null}
@@ -78,6 +80,7 @@ async function startRun(){
 function setConnection(live){const badge=$("connectionBadge");badge.classList.toggle("live",live);badge.querySelector("span").textContent=live?"API connected":"Demo mode"}
 
 $("runButton").addEventListener("click",startRun);$("taskInput").addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")startRun()});
+$("taskInput").addEventListener("input",e=>applyDirection(e.currentTarget,e.currentTarget.value));applyDirection($("taskInput"),$("taskInput").value);
 $("stopButton").addEventListener("click",async()=>{state.stopped=true;state.running=false;if(state.runId)await fetch(`/api/runs/${state.runId}/stop`,{method:"POST"});if(state.pendingResolve)state.pendingResolve(false);$("approvalCard").hidden=true;if(!state.localRuntime)addStep("error","Run stopped","The run was stopped by you.");finishRun()});
 async function decide(approved){if(state.runId){await fetch(`/api/runs/${state.runId}/decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({approved})});$("approvalCard").hidden=true;return}if(state.pendingResolve){state.pendingResolve(approved);state.pendingResolve=null;setStatus("active",approved?"Agent is working":"Finishing without that action");if(approved)addStep("browser","Action approved","Opening the shortlisted pages to verify details.")}}
 $("approveButton").addEventListener("click",()=>decide(true));
