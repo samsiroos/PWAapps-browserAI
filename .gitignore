@@ -3,3 +3,19 @@ node_modules/
 .env
 browser-agent.sqlite
 browser-agent.sqlite-*
+
+# Logs and local runtime artifacts
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+playwright-report/
+test-results/
+screenshots/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
