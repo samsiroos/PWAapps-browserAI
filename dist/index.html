@@ -60,7 +60,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.6"/></svg>
             </button>
           </span>
-          <small>Sent only to the local agent runtime. Never stored.</small>
+          <small>Saved in this browser so you do not need to enter it again.</small>
         </label>
         <label class="field">
           <span>Model</span>
@@ -125,6 +125,7 @@
               <span>Approval required</span>
               <h3 id="approvalTitle">The agent wants to continue</h3>
               <p id="approvalText">Review this action before it runs.</p>
+              <textarea class="answer-input" id="userAnswer" rows="2" placeholder="Type your answer…" hidden></textarea>
               <div class="approval-actions">
                 <button class="deny" id="denyButton">Deny</button>
                 <button class="approve" id="approveButton">Approve action</button>

@@ -25,13 +25,14 @@ app.post("/api/runs", async (req, res) => {
 app.get("/api/runs/:id", (req, res) => {
   const run = runs.get(req.params.id);
   if (!run) return res.status(404).json({ error: "Run not found" });
-  res.json({ id: run.id, status: run.status, events: run.events, waiting: run.waiting && { title: run.waiting.title, detail: run.waiting.detail } });
+  res.json({ id: run.id, status: run.status, events: run.events, waiting: run.waiting && { kind: run.waiting.kind, title: run.waiting.title, detail: run.waiting.detail } });
 });
 
 app.post("/api/runs/:id/decision", (req, res) => {
   const run = runs.get(req.params.id);
   if (!run?.waiting) return res.status(409).json({ error: "No decision is pending" });
-  run.waiting.resolve(Boolean(req.body?.approved));
+  const answer = typeof req.body?.answer === "string" ? req.body.answer.trim() : null;
+  run.waiting.resolve(answer || Boolean(req.body?.approved));
   run.waiting = null;
   res.json({ ok: true });
 });
@@ -58,6 +59,19 @@ async function pageState(page) {
   });
 }
 
+async function safePageState(page) {
+  let lastError;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try { return await pageState(page); }
+    catch (error) {
+      lastError = error;
+      if (!/Execution context was destroyed|navigation|Target closed/i.test(error.message)) throw error;
+      await page.waitForTimeout(600);
+    }
+  }
+  throw lastError;
+}
+
 async function actionLocator(page, action, control) {
   if (!action.id) return null;
   let locator = page.locator(`[data-agent-id="${Number(action.id)}"]:visible`);
@@ -79,7 +93,7 @@ const SYSTEM = `You are an autonomous browser agent controlling Playwright. Retu
 {"action":"wait","ms":1500,"reason":"..."}
 {"action":"ask_user","question":"..."}
 {"action":"finish","answer":"..."}
-Use only control IDs from the current page. Never claim an action succeeded before observing the next state. Prefer direct navigation to a search engine or known URL. Do not purchase, submit forms, log in, send messages, or expose secrets without approval. Finish with a useful concise answer and sources/URLs observed.`;
+Use only control IDs from the current page. Never claim an action succeeded before observing the next state. Before browsing, use ask_user when one or two missing preferences would materially improve the result—for example budget, bedrooms, parking, date, location radius, or must-have features. Do not ask unnecessary questions when the task is already specific. Prefer direct navigation to a search engine or known URL. Do not purchase, submit forms, log in, send messages, or expose secrets without approval. Finish with a useful concise answer and sources/URLs observed.`;
 
 async function callLLM(config, messages) {
   const provider = config.provider || "custom";
@@ -113,10 +127,19 @@ function sensitive(action, control) {
 }
 async function approve(run, title, detail) {
   run.status = "waiting";
-  const approved = await new Promise(resolve => { run.waiting = { title, detail, resolve }; });
+  const approved = await new Promise(resolve => { run.waiting = { kind: "approval", title, detail, resolve }; });
   run.status = "running";
   event(run, approved ? "browser" : "question", approved ? "Action approved" : "Action denied", detail);
   return approved;
+}
+
+async function askUser(run, question) {
+  run.status = "waiting";
+  const answer = await new Promise(resolve => { run.waiting = { kind: "question", title: "Agent needs more information", detail: question, resolve }; });
+  run.status = "running";
+  const text = typeof answer === "string" ? answer : "No additional information provided.";
+  event(run, "question", "User response", text);
+  return text;
 }
 
 async function executeRun(run, task) {
@@ -128,14 +151,14 @@ async function executeRun(run, task) {
   const messages = [{ role: "user", content: `Task: ${task}` }];
   try {
     for (let step = 1; step <= 30 && !run.stopped; step++) {
-      const state = await pageState(page);
+      const state = await safePageState(page);
       messages.push({ role: "user", content: `Step ${step}. Current page state:\n${JSON.stringify(state)}` });
       const raw = await callLLM(run.config, messages);
       const action = parseAction(raw);
       messages.push({ role: "assistant", content: JSON.stringify(action) });
       event(run, action.action === "finish" ? "response" : "browser", action.reason || `Step ${step}: ${action.action}`, action.answer || action.question || action.url || action.text || "");
       if (action.action === "finish") { run.status = "completed"; break; }
-      if (action.action === "ask_user") { const ok = await approve(run, "Agent needs your input", action.question || "Continue?"); messages.push({ role: "user", content: ok ? "User approved/answered yes." : "User denied/answered no. Choose a safe alternative or finish." }); continue; }
+      if (action.action === "ask_user") { const answer = await askUser(run, action.question || "What additional information should I use?"); messages.push({ role: "user", content: `User answered: ${answer}` }); continue; }
       const control = state.controls.find(item => item.id === Number(action.id));
       const needsApproval = run.config.approvalPolicy === "all" || (run.config.approvalPolicy === "risky" && sensitive(action, control));
       if (needsApproval && !await approve(run, `Allow ${action.action}?`, `${action.reason || "The agent requested this action"}${action.text ? ` — “${action.text.slice(0, 120)}”` : ""}`)) { messages.push({ role: "user", content: "User denied that action. Choose a safe alternative or finish." }); continue; }
@@ -149,6 +172,10 @@ async function executeRun(run, task) {
         else throw new Error(`Unsupported or incomplete action: ${action.action}`);
         await page.waitForTimeout(500);
       } catch (actionError) {
+        if (action.action === "navigate") {
+          await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
+          await page.evaluate(() => window.stop()).catch(() => {});
+        }
         const detail = `${action.action} failed: ${actionError.message}`;
         event(run, "error", "Action failed — retrying", detail);
         messages.push({ role: "user", content: `${detail}. The page may have changed or the marker may be duplicated. Observe the new state and choose another control or method. Do not stop unless the task is impossible.` });

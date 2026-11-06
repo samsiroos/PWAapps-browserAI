@@ -1,5 +1,6 @@
 const $ = (id) => document.getElementById(id);
-const state = { running: false, stopped: false, pending: null, localRuntime: false, runId: null, seenEvents: new Set(), pollTimer: null };
+const state = { running: false, stopped: false, pending: null, localRuntime: false, runId: null, seenEvents: new Set(), pollTimer: null, waitingKind: null };
+const CONFIG_KEY="browser-agent-config-v1";
 const providers = {
   openai: { endpoint: "https://api.openai.com/v1", model: "gpt-4.1-mini" },
   gemini: { endpoint: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.5-flash" },
@@ -9,6 +10,8 @@ const providers = {
 };
 const rtlPattern = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFC]/;
 function applyDirection(element,text){const rtl=rtlPattern.test(text||"");element.dir=rtl?"rtl":"ltr";element.classList.toggle("rtl",rtl)}
+function saveConfig(){try{localStorage.setItem(CONFIG_KEY,JSON.stringify({provider:$("provider").value,endpoint:$("apiEndpoint").value,apiKey:$("apiKey").value,model:$("modelName").value,approvalPolicy:$("approvalPolicy").value}))}catch{}}
+function restoreConfig(){try{const saved=JSON.parse(localStorage.getItem(CONFIG_KEY)||"null");if(!saved)return;$("provider").value=saved.provider||"openai";$("apiEndpoint").value=saved.endpoint??providers[$("provider").value].endpoint;$("apiKey").value=saved.apiKey||"";$("modelName").value=saved.model??providers[$("provider").value].model;$("approvalPolicy").value=saved.approvalPolicy||"risky"}catch{}}
 const demoSteps = [
   ["plan", "Planning the approach", "I’ll search product listings, collect price and rating data, then compare the strongest candidates."],
   ["browser", "Opening search results", "Navigating to a product search and scanning the first page for relevant options."],
@@ -63,7 +66,7 @@ async function pollLocalRun(){
   try{
     const response=await fetch(`/api/runs/${state.runId}`);const run=await response.json();if(!response.ok)throw new Error(run.error||"Run unavailable");
     for(const item of run.events||[]){if(!state.seenEvents.has(item.id)){state.seenEvents.add(item.id);addStep(item.kind,item.title,item.text)}}
-    if(run.waiting){setStatus("waiting","Waiting for your approval");$("approvalTitle").textContent=run.waiting.title;$("approvalText").textContent=run.waiting.detail;applyDirection($("approvalCard"),`${run.waiting.title} ${run.waiting.detail}`);$("approvalCard").hidden=false}else $("approvalCard").hidden=true;
+    if(run.waiting){state.waitingKind=run.waiting.kind||"approval";const question=state.waitingKind==="question";setStatus("waiting",question?"Waiting for your answer":"Waiting for your approval");$("approvalTitle").textContent=run.waiting.title;$("approvalText").textContent=run.waiting.detail;$("userAnswer").hidden=!question;$("denyButton").textContent=question?"Skip":"Deny";$("approveButton").textContent=question?"Send answer":"Approve action";applyDirection($("approvalCard"),`${run.waiting.title} ${run.waiting.detail}`);$("approvalCard").hidden=false;if(question&&!$("userAnswer").value)setTimeout(()=>$("userAnswer").focus(),50)}else {state.waitingKind=null;$("approvalCard").hidden=true;$("userAnswer").hidden=true}
     if(["completed","failed","stopped"].includes(run.status)){finishRun();state.runId=null;return}
     setStatus(run.status==="waiting"?"waiting":"active",run.status==="starting"?"Launching browser":"Agent is controlling Chromium");state.pollTimer=setTimeout(pollLocalRun,700);
   }catch(error){addStep("error","Runtime connection lost",error.message);finishRun();state.runId=null}
@@ -82,12 +85,15 @@ function setConnection(live){const badge=$("connectionBadge");badge.classList.to
 $("runButton").addEventListener("click",startRun);$("taskInput").addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")startRun()});
 $("taskInput").addEventListener("input",e=>applyDirection(e.currentTarget,e.currentTarget.value));applyDirection($("taskInput"),$("taskInput").value);
 $("stopButton").addEventListener("click",async()=>{state.stopped=true;state.running=false;if(state.runId)await fetch(`/api/runs/${state.runId}/stop`,{method:"POST"});if(state.pendingResolve)state.pendingResolve(false);$("approvalCard").hidden=true;if(!state.localRuntime)addStep("error","Run stopped","The run was stopped by you.");finishRun()});
-async function decide(approved){if(state.runId){await fetch(`/api/runs/${state.runId}/decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({approved})});$("approvalCard").hidden=true;return}if(state.pendingResolve){state.pendingResolve(approved);state.pendingResolve=null;setStatus("active",approved?"Agent is working":"Finishing without that action");if(approved)addStep("browser","Action approved","Opening the shortlisted pages to verify details.")}}
+async function decide(approved){if(state.runId){const answer=state.waitingKind==="question"&&approved?$("userAnswer").value.trim():"";if(state.waitingKind==="question"&&approved&&!answer){toast("Type an answer or choose Skip");return}await fetch(`/api/runs/${state.runId}/decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(answer?{answer}:{approved})});$("approvalCard").hidden=true;$("userAnswer").value="";return}if(state.pendingResolve){state.pendingResolve(approved);state.pendingResolve=null;setStatus("active",approved?"Agent is working":"Finishing without that action");if(approved)addStep("browser","Action approved","Opening the shortlisted pages to verify details.")}}
 $("approveButton").addEventListener("click",()=>decide(true));
 $("denyButton").addEventListener("click",()=>decide(false));
 $("keyToggle").addEventListener("click",()=>{const input=$("apiKey");input.type=input.type==="password"?"text":"password"});
 $("themeButton").addEventListener("click",()=>document.body.classList.toggle("dark"));
-$("provider").addEventListener("change",()=>{const preset=providers[$("provider").value];$("apiEndpoint").value=preset.endpoint;$("modelName").value=preset.model});
+restoreConfig();
+$("provider").addEventListener("change",()=>{const preset=providers[$("provider").value];$("apiEndpoint").value=preset.endpoint;$("modelName").value=preset.model;saveConfig()});
+[$("apiEndpoint"),$("apiKey"),$("modelName"),$("approvalPolicy")].forEach(element=>element.addEventListener(element.tagName==="SELECT"?"change":"input",saveConfig));
+$("userAnswer").addEventListener("input",e=>applyDirection(e.currentTarget,e.currentTarget.value));$("userAnswer").addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="Enter")decide(true)});
 document.querySelectorAll("[data-prompt]").forEach(button=>button.addEventListener("click",()=>{$("taskInput").value=button.dataset.prompt;$("taskInput").focus()}));
 $("testConnection").addEventListener("click",async()=>{if(!$("apiKey").value.trim()){toast("Add an API key to test the connection");return}toast(state.localRuntime?"Local runtime ready — provider is verified on run":"Connection will be verified on the next run")});
 
