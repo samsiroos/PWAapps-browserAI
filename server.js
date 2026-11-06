@@ -13,8 +13,9 @@ const db = new DatabaseSync(path.join(root, "browser-agent.sqlite"));
 db.exec(`CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, task TEXT NOT NULL, provider TEXT, endpoint TEXT, model TEXT,
   approval_policy TEXT, status TEXT NOT NULL, events_json TEXT NOT NULL DEFAULT '[]',
-  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  parent_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );`);
+try { db.exec("ALTER TABLE jobs ADD COLUMN parent_id TEXT"); } catch {}
 db.prepare("UPDATE jobs SET status = 'interrupted', updated_at = ? WHERE status IN ('starting','running','waiting')").run(Date.now());
 
 app.use(express.json({ limit: "1mb" }));
@@ -22,14 +23,15 @@ app.use(express.static(path.join(root, "dist")));
 app.get("/api/health", (_req, res) => res.json({ ok: true, runtime: "playwright", providers: ["openai", "gemini", "openrouter", "pwaapps", "custom"] }));
 
 app.post("/api/runs", async (req, res) => {
-  const { task, provider, endpoint, apiKey, model, approvalPolicy = "risky" } = req.body || {};
+  const { task, provider, endpoint, apiKey, model, approvalPolicy = "risky", continueFrom = null } = req.body || {};
   if (!task || !apiKey || (!model && provider !== "pwaapps")) return res.status(400).json({ error: provider === "pwaapps" ? "Task and API key are required." : "Task, API key, and model are required." });
   const run = { id: crypto.randomUUID(), status: "starting", events: [], waiting: null, stopped: false, config: { provider, endpoint, apiKey, model, approvalPolicy } };
   runs.set(run.id, run);
   const now = Date.now();
-  db.prepare("INSERT INTO jobs (id,task,provider,endpoint,model,approval_policy,status,events_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(run.id, task, provider || "custom", endpoint || "", model || "", approvalPolicy, run.status, "[]", now, now);
+  const previousJob = continueFrom ? db.prepare("SELECT task,events_json FROM jobs WHERE id = ?").get(continueFrom) : null;
+  db.prepare("INSERT INTO jobs (id,task,provider,endpoint,model,approval_policy,status,events_json,parent_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(run.id, task, provider || "custom", endpoint || "", model || "", approvalPolicy, run.status, "[]", previousJob ? continueFrom : null, now, now);
   res.status(202).json({ id: run.id });
-  executeRun(run, task).catch(error => fail(run, error));
+  executeRun(run, task, previousJob).catch(error => fail(run, error));
 });
 
 app.get("/api/runs/:id", (req, res) => {
@@ -135,7 +137,7 @@ const SYSTEM = `You are an autonomous browser agent controlling Playwright. Retu
 {"action":"finish","answer":"..."}
 Use only control IDs from the current page. Never claim an action succeeded before observing the next state. Before browsing, use ask_user when one or two missing preferences would materially improve the result—for example budget, bedrooms, parking, date, location radius, model year, or must-have features. Do not ask unnecessary questions when the task is already specific. Prefer direct navigation to a search engine or an observed link; never invent a site's URL structure.
 For prices and comparisons: verify against at least two independent marketplace domains when possible; cite the exact URLs actually observed; group vehicle prices by model year and trim; distinguish listing price from factory price; report the observation date; and never reuse prices from memory. Extract several comparable listings, remove obvious placeholder/error/outlier values, and describe the filtering. Do not merge unrelated model years into a misleading range. For Iranian vehicle research, note that Bama uses https://bama.ir/car/jac-s5 and https://bama.ir/car/haima-s7; use Divar (https://divar.ir) or another independent active marketplace as a cross-check. If sources disagree, show the disagreement instead of averaging it away.
-Do not purchase, submit forms, log in, send messages, or expose secrets without approval. Finish with a useful concise answer and a Sources section containing exact observed URLs.`;
+Do not purchase, submit forms, log in, send messages, or expose secrets without approval. Every finish answer must contain: (1) a clearly labeled Final summary, (2) the key findings or completed work, (3) limitations or items still open, (4) a Sources section with exact observed URLs when browsing occurred, and (5) one short suggestion for a useful next step that the user can continue with.`;
 
 async function callLLM(config, messages) {
   const provider = config.provider || "custom";
@@ -208,13 +210,14 @@ async function askUser(run, question) {
   return text;
 }
 
-async function executeRun(run, task) {
+async function executeRun(run, task, previousJob = null) {
   event(run, "plan", "Starting independent browser", "Launching a local Chromium window controlled by Playwright.");
   const browser = await chromium.launch({ headless: false });
   const context = await browser.newContext({ viewport: { width: 1280, height: 820 } });
   const page = await context.newPage();
   run.status = "running";
-  const messages = [{ role: "user", content: `Task: ${task}` }];
+  const previousContext = previousJob ? `\nThis is a continuation of an earlier job. Previous task: ${previousJob.task}\nPrevious timeline and final answer: ${previousJob.events_json}\nContinue from that work without repeating completed steps unless verification is necessary.` : "";
+  const messages = [{ role: "user", content: `Task: ${task}${previousContext}` }];
   const verificationTask = /قیمت|مقایسه|price|pricing|compare|comparison/i.test(task);
   const visitedSources = new Set();
   let verificationRetries = 0;

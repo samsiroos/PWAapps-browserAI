@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { running: false, stopped: false, pending: null, localRuntime: false, runId: null, seenEvents: new Set(), pollTimer: null, waitingKind: null, configRequired: false, historyOpen: false };
+const state = { running: false, stopped: false, pending: null, localRuntime: false, runId: null, lastJobId: null, seenEvents: new Set(), pollTimer: null, waitingKind: null, configRequired: false, historyOpen: false };
 const CONFIG_KEY="browser-agent-config-v1";
 const heroScenes=["images/scene-metro.png","images/scene-greenhouse.png","images/scene-door.png"];
 const providers = {
@@ -32,8 +32,8 @@ function addStep(kind,title,text){
   row.innerHTML=`<div class="timeline-icon">${symbols[kind]||"·"}</div><div class="timeline-content"><span>${kind}</span><h3></h3><p></p></div>`;
   row.querySelector("h3").textContent=title;row.querySelector("p").textContent=text;applyDirection(row.querySelector(".timeline-content"),`${title} ${text}`);$("timeline").appendChild(row);row.scrollIntoView({behavior:"smooth",block:"nearest"});
 }
-function resetRun(){state.stopped=false;$("emptyState").hidden=true;$("timeline").hidden=false;$("timeline").innerHTML="";$("approvalCard").hidden=true;$("stopButton").hidden=false;$("runButton").classList.add("running")}
-function finishRun(){state.running=false;$("stopButton").hidden=true;$("runButton").classList.remove("running");setStatus("","Run complete");if(state.historyOpen)loadJobs()}
+function resetRun(){state.stopped=false;$("emptyState").hidden=true;$("timeline").hidden=false;$("timeline").innerHTML="";$("approvalCard").hidden=true;$("continueCard").hidden=true;$("stopButton").hidden=false;$("runButton").classList.add("running")}
+function finishRun(){state.running=false;$("stopButton").hidden=true;$("runButton").classList.remove("running");setStatus("","Run complete");$("continueCard").hidden=!(state.localRuntime&&state.lastJobId);if(state.historyOpen)loadJobs()}
 function demoAnswer(task){return `I completed the research workflow for: “${task}”\n\nTop choices\n1. Keychron K2 — best overall balance of build quality, wireless flexibility, and value.\n2. Logitech K380 — best budget pick for portability and multi-device use.\n3. Royal Kludge RK84 — best feature set for users who want mechanical switches and customization.\n\nBefore buying, verify the live price, keyboard layout, and switch type on the seller’s page.`}
 
 async function runDemo(task){
@@ -60,8 +60,8 @@ async function callModel(task){
   }catch(error){addStep("error","Request failed",`${error.message}\n\nCheck the endpoint, key, model name, and whether the endpoint allows browser requests (CORS).`);finishRun();setConnection(false)}
 }
 
-async function startLocalRun(task){
-  const response=await fetch("/api/runs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task,provider:$("provider").value,endpoint:$("apiEndpoint").value.trim(),apiKey:$("apiKey").value.trim(),model:$("modelName").value.trim(),approvalPolicy:$("approvalPolicy").value})});
+async function startLocalRun(task,continueFrom=null){
+  const response=await fetch("/api/runs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task,provider:$("provider").value,endpoint:$("apiEndpoint").value.trim(),apiKey:$("apiKey").value.trim(),model:$("modelName").value.trim(),approvalPolicy:$("approvalPolicy").value,continueFrom})});
   const data=await response.json();if(!response.ok)throw new Error(data.error||"Could not start the local agent");
   state.runId=data.id;state.seenEvents.clear();pollLocalRun();
 }
@@ -71,7 +71,7 @@ async function pollLocalRun(){
     const response=await fetch(`/api/runs/${state.runId}`);const run=await response.json();if(!response.ok)throw new Error(run.error||"Run unavailable");
     for(const item of run.events||[]){if(!state.seenEvents.has(item.id)){state.seenEvents.add(item.id);addStep(item.kind,item.title,item.text)}}
     if(run.waiting){state.waitingKind=run.waiting.kind||"approval";const question=state.waitingKind==="question";setStatus("waiting",question?"Waiting for your answer":"Waiting for your approval");$("approvalTitle").textContent=run.waiting.title;$("approvalText").textContent=run.waiting.detail;$("userAnswer").hidden=!question;$("denyButton").textContent=question?"Skip":"Deny";$("approveButton").textContent=question?"Send answer":"Approve action";applyDirection($("approvalCard"),`${run.waiting.title} ${run.waiting.detail}`);$("approvalCard").hidden=false;if(question&&!$("userAnswer").value)setTimeout(()=>$("userAnswer").focus(),50)}else {state.waitingKind=null;$("approvalCard").hidden=true;$("userAnswer").hidden=true}
-    if(["completed","failed","stopped"].includes(run.status)){finishRun();state.runId=null;return}
+    if(["completed","failed","stopped"].includes(run.status)){state.lastJobId=state.runId;finishRun();state.runId=null;return}
     setStatus(run.status==="waiting"?"waiting":"active",run.status==="starting"?"Launching browser":"Agent is controlling Chromium");state.pollTimer=setTimeout(pollLocalRun,700);
   }catch(error){addStep("error","Runtime connection lost",error.message);finishRun();state.runId=null}
 }
@@ -86,7 +86,7 @@ async function startRun(){
 }
 function setConnection(live){const badge=$("connectionBadge");badge.classList.toggle("live",live);badge.querySelector("span").textContent=live?"API connected":"Demo mode"}
 
-function newJob(){if(state.running){toast("Stop the current job before starting a new one");return}state.runId=null;state.seenEvents.clear();$("taskInput").value="";applyDirection($("taskInput"),"");$("timeline").innerHTML="";$("timeline").hidden=true;$("emptyState").hidden=false;$("approvalCard").hidden=true;setStatus("","Ready for a task");$("taskInput").focus()}
+function newJob(){if(state.running){toast("Stop the current job before starting a new one");return}state.runId=null;state.lastJobId=null;state.seenEvents.clear();$("taskInput").value="";applyDirection($("taskInput"),"");$("timeline").innerHTML="";$("timeline").hidden=true;$("emptyState").hidden=false;$("approvalCard").hidden=true;$("continueCard").hidden=true;setStatus("","Ready for a task");$("taskInput").focus()}
 function openHistory(){state.historyOpen=true;$("historyPanel").hidden=false;$("historyBackdrop").hidden=false;loadJobs()}
 function closeHistory(){state.historyOpen=false;$("historyPanel").hidden=true;$("historyBackdrop").hidden=true}
 async function loadJobs(){
@@ -99,7 +99,8 @@ function jobCard(job){
   card.querySelector('[data-action="open"]').addEventListener("click",()=>openSavedJob(job.id));card.querySelector('[data-action="rerun"]').addEventListener("click",()=>rerunJob(job.id));card.querySelector('[data-action="delete"]').addEventListener("click",()=>deleteJob(job.id,job.task));return card;
 }
 async function getJob(id){const response=await fetch(`/api/jobs/${id}`,{cache:"no-store"});const job=await response.json();if(!response.ok)throw new Error(job.error||"Could not load job");return job}
-async function openSavedJob(id){try{const job=await getJob(id);closeHistory();$("taskInput").value=job.task;applyDirection($("taskInput"),job.task);$("emptyState").hidden=true;$("timeline").hidden=false;$("timeline").innerHTML="";(job.events||[]).forEach(item=>addStep(item.kind,item.title,item.text));setStatus("",`Saved job · ${job.status}`)}catch(error){toast(error.message)}}
+async function openSavedJob(id){try{const job=await getJob(id);closeHistory();state.lastJobId=job.id;$("taskInput").value=job.task;applyDirection($("taskInput"),job.task);$("emptyState").hidden=true;$("timeline").hidden=false;$("timeline").innerHTML="";(job.events||[]).forEach(item=>addStep(item.kind,item.title,item.text));setStatus("",`Saved job · ${job.status}`);$("continueCard").hidden=!(["completed","failed","stopped","interrupted"].includes(job.status)&&state.localRuntime)}catch(error){toast(error.message)}}
+async function continueJob(){const followUp=$("continueInput").value.trim();if(!followUp){toast("Describe the next part of the job");$("continueInput").focus();return}if(!state.lastJobId||!state.localRuntime){toast("Open a saved local job first");return}if(!configIsValid()){openConfig(true);return}state.running=true;resetRun();setStatus("active","Continuing previous job");try{await startLocalRun(followUp,state.lastJobId);$("continueInput").value=""}catch(error){addStep("error","Could not continue job",error.message);finishRun()}}
 async function rerunJob(id){if(state.running){toast("Stop the current job before rerunning another");return}try{const job=await getJob(id);$("taskInput").value=job.task;$("provider").value=job.provider||$("provider").value;$("apiEndpoint").value=job.endpoint||$("apiEndpoint").value;$("modelName").value=job.model||"";saveConfig();closeHistory();startRun()}catch(error){toast(error.message)}}
 async function deleteJob(id,task){if(!confirm(`Delete this saved job?\n\n${task}`))return;try{const response=await fetch(`/api/jobs/${id}`,{method:"DELETE"});const data=await response.json();if(!response.ok)throw new Error(data.error||"Could not delete job");toast("Job deleted");loadJobs()}catch(error){toast(error.message)}}
 
@@ -119,6 +120,7 @@ $("userAnswer").addEventListener("input",e=>applyDirection(e.currentTarget,e.cur
 document.querySelectorAll("[data-prompt]").forEach(button=>button.addEventListener("click",()=>{$("taskInput").value=button.dataset.prompt;$("taskInput").focus()}));
 $("settingsButton").addEventListener("click",()=>openConfig(false));
 $("newJobButton").addEventListener("click",newJob);$("historyButton").addEventListener("click",openHistory);$("closeHistory").addEventListener("click",closeHistory);$("historyBackdrop").addEventListener("click",closeHistory);
+$("continueButton").addEventListener("click",continueJob);$("continueInput").addEventListener("input",e=>applyDirection(e.currentTarget,e.currentTarget.value));$("continueInput").addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="Enter")continueJob()});
 $("configBackdrop").addEventListener("click",()=>closeConfig());
 $("saveConfigButton").addEventListener("click",()=>{if(!configIsValid()){toast($("provider").value==="pwaapps"?"API endpoint and key are required":"API endpoint, key, and model are required");return}saveConfig();closeConfig();toast("AI settings saved")});
 if(!configIsValid())openConfig(true);
