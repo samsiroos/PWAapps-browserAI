@@ -1,9 +1,17 @@
 # Browser Agent Workbench
 
-A static browser-agent interface with an OpenAI-compatible API configuration, task composer, agent activity timeline, approval flow, and final response panel.
+A real local browser agent with a web dashboard, Playwright-controlled Chromium, pluggable LLM providers, an activity timeline, and approval gates.
 
 ## Run locally
 
-Serve the repository root with any static server, or open `dist/index.html` directly.
+```powershell
+npm install
+npm run install-browser
+npm start
+```
 
-The app starts in demo mode. Enter an API endpoint, API key, and model name to send the task directly from the browser to an OpenAI-compatible `/chat/completions` endpoint. The key is held only in page memory and is not persisted.
+Then open `http://localhost:3210`.
+
+Choose OpenAI/GPT, Gemini, OpenRouter, PWAApps AI, or a custom OpenAI-compatible endpoint. Enter the provider key and model, then run a task. The local runtime opens a visible Chromium browser and executes model-selected actions. Keys remain in process memory only for the run and are cleared afterward.
+
+The hosted version remains a dashboard/demo because hosted pages cannot control arbitrary browser tabs. Real automation is available through the local runtime.

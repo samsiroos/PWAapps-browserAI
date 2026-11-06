@@ -1,5 +1,12 @@
 const $ = (id) => document.getElementById(id);
-const state = { running: false, stopped: false, pending: null };
+const state = { running: false, stopped: false, pending: null, localRuntime: false, runId: null, seenEvents: new Set(), pollTimer: null };
+const providers = {
+  openai: { endpoint: "https://api.openai.com/v1", model: "gpt-4.1-mini" },
+  gemini: { endpoint: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.5-flash" },
+  openrouter: { endpoint: "https://openrouter.ai/api/v1", model: "openai/gpt-4.1-mini" },
+  pwaapps: { endpoint: "https://ai.pwaapps.com/v1", model: "gpt-4.1-mini" },
+  custom: { endpoint: "", model: "" }
+};
 const demoSteps = [
   ["plan", "Planning the approach", "I’ll search product listings, collect price and rating data, then compare the strongest candidates."],
   ["browser", "Opening search results", "Navigating to a product search and scanning the first page for relevant options."],
@@ -43,18 +50,41 @@ async function callModel(task){
   }catch(error){addStep("error","Request failed",`${error.message}\n\nCheck the endpoint, key, model name, and whether the endpoint allows browser requests (CORS).`);finishRun();setConnection(false)}
 }
 
+async function startLocalRun(task){
+  const response=await fetch("/api/runs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task,provider:$("provider").value,endpoint:$("apiEndpoint").value.trim(),apiKey:$("apiKey").value.trim(),model:$("modelName").value.trim(),approvalPolicy:$("approvalPolicy").value})});
+  const data=await response.json();if(!response.ok)throw new Error(data.error||"Could not start the local agent");
+  state.runId=data.id;state.seenEvents.clear();pollLocalRun();
+}
+async function pollLocalRun(){
+  if(!state.runId)return;
+  try{
+    const response=await fetch(`/api/runs/${state.runId}`);const run=await response.json();if(!response.ok)throw new Error(run.error||"Run unavailable");
+    for(const item of run.events||[]){if(!state.seenEvents.has(item.id)){state.seenEvents.add(item.id);addStep(item.kind,item.title,item.text)}}
+    if(run.waiting){setStatus("waiting","Waiting for your approval");$("approvalTitle").textContent=run.waiting.title;$("approvalText").textContent=run.waiting.detail;$("approvalCard").hidden=false}else $("approvalCard").hidden=true;
+    if(["completed","failed","stopped"].includes(run.status)){finishRun();state.runId=null;return}
+    setStatus(run.status==="waiting"?"waiting":"active",run.status==="starting"?"Launching browser":"Agent is controlling Chromium");state.pollTimer=setTimeout(pollLocalRun,700);
+  }catch(error){addStep("error","Runtime connection lost",error.message);finishRun();state.runId=null}
+}
+
 async function startRun(){
   if(state.running)return;const task=$("taskInput").value.trim();if(!task){toast("Describe a task first");$("taskInput").focus();return}
   state.running=true;resetRun();setStatus("active","Agent is working");
-  if($("apiKey").value.trim())await callModel(task);else await runDemo(task);
+  try{
+    if(state.localRuntime){if(!$("apiKey").value.trim())throw new Error("Add the selected provider's API key first.");await startLocalRun(task)}
+    else if($("apiKey").value.trim())await callModel(task);else await runDemo(task);
+  }catch(error){addStep("error","Could not start agent",error.message);finishRun()}
 }
 function setConnection(live){const badge=$("connectionBadge");badge.classList.toggle("live",live);badge.querySelector("span").textContent=live?"API connected":"Demo mode"}
 
 $("runButton").addEventListener("click",startRun);$("taskInput").addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")startRun()});
-$("stopButton").addEventListener("click",()=>{state.stopped=true;state.running=false;if(state.pendingResolve)state.pendingResolve(false);$("approvalCard").hidden=true;addStep("error","Run stopped","The run was stopped by you.");finishRun()});
-$("approveButton").addEventListener("click",()=>{if(state.pendingResolve){state.pendingResolve(true);state.pendingResolve=null;setStatus("active","Agent is working");addStep("browser","Action approved","Opening the shortlisted pages to verify details.")}});
-$("denyButton").addEventListener("click",()=>{if(state.pendingResolve){state.pendingResolve(false);state.pendingResolve=null;setStatus("active","Finishing without that action")}});
+$("stopButton").addEventListener("click",async()=>{state.stopped=true;state.running=false;if(state.runId)await fetch(`/api/runs/${state.runId}/stop`,{method:"POST"});if(state.pendingResolve)state.pendingResolve(false);$("approvalCard").hidden=true;if(!state.localRuntime)addStep("error","Run stopped","The run was stopped by you.");finishRun()});
+async function decide(approved){if(state.runId){await fetch(`/api/runs/${state.runId}/decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({approved})});$("approvalCard").hidden=true;return}if(state.pendingResolve){state.pendingResolve(approved);state.pendingResolve=null;setStatus("active",approved?"Agent is working":"Finishing without that action");if(approved)addStep("browser","Action approved","Opening the shortlisted pages to verify details.")}}
+$("approveButton").addEventListener("click",()=>decide(true));
+$("denyButton").addEventListener("click",()=>decide(false));
 $("keyToggle").addEventListener("click",()=>{const input=$("apiKey");input.type=input.type==="password"?"text":"password"});
 $("themeButton").addEventListener("click",()=>document.body.classList.toggle("dark"));
+$("provider").addEventListener("change",()=>{const preset=providers[$("provider").value];$("apiEndpoint").value=preset.endpoint;$("modelName").value=preset.model});
 document.querySelectorAll("[data-prompt]").forEach(button=>button.addEventListener("click",()=>{$("taskInput").value=button.dataset.prompt;$("taskInput").focus()}));
-$("testConnection").addEventListener("click",async()=>{if(!$("apiKey").value.trim()){toast("Add an API key to test the connection");return}toast("Connection will be verified on the next run")});
+$("testConnection").addEventListener("click",async()=>{if(!$("apiKey").value.trim()){toast("Add an API key to test the connection");return}toast(state.localRuntime?"Local runtime ready — provider is verified on run":"Connection will be verified on the next run")});
+
+(async()=>{try{const response=await fetch("/api/health",{cache:"no-store"});const data=await response.json();if(data.ok){state.localRuntime=true;setConnection(true);$("connectionBadge").querySelector("span").textContent="Local agent ready"}}catch{state.localRuntime=false}})();

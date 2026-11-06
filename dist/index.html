@@ -39,6 +39,16 @@
         </div>
 
         <label class="field">
+          <span>Provider</span>
+          <select id="provider">
+            <option value="openai">OpenAI / GPT</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="pwaapps">PWAApps AI</option>
+            <option value="custom">Custom OpenAI-compatible</option>
+          </select>
+        </label>
+        <label class="field">
           <span>API endpoint</span>
           <input id="apiEndpoint" type="url" value="https://api.openai.com/v1" autocomplete="url" spellcheck="false">
         </label>
@@ -50,7 +60,7 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.6"/></svg>
             </button>
           </span>
-          <small>Kept only in this tab. Never stored.</small>
+          <small>Sent only to the local agent runtime. Never stored.</small>
         </label>
         <label class="field">
           <span>Model</span>
@@ -67,7 +77,7 @@
 
         <div class="privacy-note">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V8a5 5 0 0 1 10 0v2m-11 0h12v10H6V10Z"/></svg>
-          <p><strong>Your key stays local.</strong><br>Requests go directly from this browser to your endpoint.</p>
+          <p><strong>Your key stays local.</strong><br>The independent runtime keeps it in memory only for the current run.</p>
         </div>
       </aside>
 
