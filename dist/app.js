@@ -112,7 +112,7 @@ $("denyButton").addEventListener("click",()=>decide(false));
 $("keyToggle").addEventListener("click",()=>{const input=$("apiKey");input.type=input.type==="password"?"text":"password"});
 $("themeButton").addEventListener("click",()=>document.body.classList.toggle("dark"));
 restoreConfig();
-{const values=new Uint32Array(1);crypto.getRandomValues(values);const scene=heroScenes[values[0]%heroScenes.length];$("heroScene").style.setProperty("--scene-image",`url("${scene}")`)}
+{const values=new Uint32Array(1);crypto.getRandomValues(values);const scene=heroScenes[values[0]%heroScenes.length];document.documentElement.style.setProperty("--scene-image",`url("${scene}")`)}
 $("provider").addEventListener("change",()=>{const preset=providers[$("provider").value];$("apiEndpoint").value=preset.endpoint;$("modelName").value=preset.model;saveConfig()});
 [$("apiEndpoint"),$("apiKey"),$("modelName"),$("approvalPolicy")].forEach(element=>element.addEventListener(element.tagName==="SELECT"?"change":"input",saveConfig));
 $("userAnswer").addEventListener("input",e=>applyDirection(e.currentTarget,e.currentTarget.value));$("userAnswer").addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="Enter")decide(true)});
