@@ -115,6 +115,15 @@ async function actionLocator(page, action, control) {
   return locator.last();
 }
 
+function normalizeResearchUrl(rawUrl) {
+  const corrections = new Map([
+    ["https://bama.ir/car/jac/s5", "https://bama.ir/car/jac-s5"],
+    ["https://bama.ir/car/haima/s7", "https://bama.ir/car/haima-s7"]
+  ]);
+  const normalized = String(rawUrl || "").replace(/\/$/, "").toLowerCase();
+  return corrections.get(normalized) || rawUrl;
+}
+
 const SYSTEM = `You are an autonomous browser agent controlling Playwright. Return ONLY one JSON object per turn, no markdown. Available actions:
 {"action":"navigate","url":"https://...","reason":"..."}
 {"action":"click","id":12,"reason":"..."}
@@ -124,7 +133,9 @@ const SYSTEM = `You are an autonomous browser agent controlling Playwright. Retu
 {"action":"wait","ms":1500,"reason":"..."}
 {"action":"ask_user","question":"..."}
 {"action":"finish","answer":"..."}
-Use only control IDs from the current page. Never claim an action succeeded before observing the next state. Before browsing, use ask_user when one or two missing preferences would materially improve the result—for example budget, bedrooms, parking, date, location radius, or must-have features. Do not ask unnecessary questions when the task is already specific. Prefer direct navigation to a search engine or known URL. Do not purchase, submit forms, log in, send messages, or expose secrets without approval. Finish with a useful concise answer and sources/URLs observed.`;
+Use only control IDs from the current page. Never claim an action succeeded before observing the next state. Before browsing, use ask_user when one or two missing preferences would materially improve the result—for example budget, bedrooms, parking, date, location radius, model year, or must-have features. Do not ask unnecessary questions when the task is already specific. Prefer direct navigation to a search engine or an observed link; never invent a site's URL structure.
+For prices and comparisons: verify against at least two independent marketplace domains when possible; cite the exact URLs actually observed; group vehicle prices by model year and trim; distinguish listing price from factory price; report the observation date; and never reuse prices from memory. Extract several comparable listings, remove obvious placeholder/error/outlier values, and describe the filtering. Do not merge unrelated model years into a misleading range. For Iranian vehicle research, note that Bama uses https://bama.ir/car/jac-s5 and https://bama.ir/car/haima-s7; use Divar (https://divar.ir) or another independent active marketplace as a cross-check. If sources disagree, show the disagreement instead of averaging it away.
+Do not purchase, submit forms, log in, send messages, or expose secrets without approval. Finish with a useful concise answer and a Sources section containing exact observed URLs.`;
 
 async function callLLM(config, messages) {
   const provider = config.provider || "custom";
@@ -204,6 +215,15 @@ async function executeRun(run, task) {
   const page = await context.newPage();
   run.status = "running";
   const messages = [{ role: "user", content: `Task: ${task}` }];
+  const verificationTask = /قیمت|مقایسه|price|pricing|compare|comparison/i.test(task);
+  const visitedSources = new Set();
+  let verificationRetries = 0;
+  const recordSource = rawUrl => {
+    try {
+      const host = new URL(rawUrl).hostname.replace(/^www\./, "");
+      if (host && !/(^|\.)google\.|(^|\.)bing\.|(^|\.)yahoo\./.test(host)) visitedSources.add(host);
+    } catch {}
+  };
   try {
     for (let step = 1; step <= 30 && !run.stopped; step++) {
       const state = await safePageState(page);
@@ -218,6 +238,13 @@ async function executeRun(run, task) {
         continue;
       }
       messages.push({ role: "assistant", content: JSON.stringify(action) });
+      if (action.action === "finish" && verificationTask && visitedSources.size < 2 && verificationRetries < 2) {
+        verificationRetries++;
+        const checked = [...visitedSources].join(", ") || "none";
+        event(run, "question", "More source verification required", `Checked marketplace domains: ${checked}. The agent must cross-check another independent source before finalizing prices.`);
+        messages.push({ role: "user", content: `Do not finish yet. This price/comparison task has only ${visitedSources.size} independent marketplace source(s): ${checked}. Browse at least one additional independent marketplace such as divar.ir, validate model years and trims, remove obvious outliers, then return a corrected answer with exact observed URLs.` });
+        continue;
+      }
       event(run, action.action === "finish" ? "response" : "browser", action.reason || `Step ${step}: ${action.action}`, action.answer || action.question || action.url || action.text || "");
       if (action.action === "finish") { run.status = "completed"; break; }
       if (action.action === "ask_user") { const answer = await askUser(run, action.question || "What additional information should I use?"); messages.push({ role: "user", content: `User answered: ${answer}` }); continue; }
@@ -225,7 +252,12 @@ async function executeRun(run, task) {
       const needsApproval = run.config.approvalPolicy === "all" || (run.config.approvalPolicy === "risky" && sensitive(action, control));
       if (needsApproval && !await approve(run, `Allow ${action.action}?`, `${action.reason || "The agent requested this action"}${action.text ? ` — “${action.text.slice(0, 120)}”` : ""}`)) { messages.push({ role: "user", content: "User denied that action. Choose a safe alternative or finish." }); continue; }
       try {
-        if (action.action === "navigate") await page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 30000 });
+        if (action.action === "navigate") {
+          const targetUrl = normalizeResearchUrl(action.url);
+          if (targetUrl !== action.url) event(run, "browser", "Corrected marketplace URL", `${action.url} → ${targetUrl}`);
+          const response = await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+          if (response && response.status() >= 400) throw new Error(`HTTP ${response.status()} at ${response.url()}`);
+        }
         else if (action.action === "click" && action.id) await (await actionLocator(page, action, control)).click({ timeout: 10000 });
         else if (action.action === "type" && action.id) await (await actionLocator(page, action, control)).fill(String(action.text || ""), { timeout: 10000 });
         else if (action.action === "scroll") await page.mouse.wheel(0, action.direction === "up" ? -650 : 650);
@@ -233,6 +265,7 @@ async function executeRun(run, task) {
         else if (action.action === "wait") await page.waitForTimeout(Math.min(Number(action.ms) || 1000, 10000));
         else throw new Error(`Unsupported or incomplete action: ${action.action}`);
         await page.waitForTimeout(500);
+        recordSource(page.url());
       } catch (actionError) {
         if (action.action === "navigate") {
           await page.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
