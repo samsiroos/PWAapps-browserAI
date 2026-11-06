@@ -189,4 +189,4 @@ async function executeRun(run, task) {
   }
 }
 
-app.listen(PORT, "127.0.0.1", () => console.log(`Independent Browser Agent: http://localhost:${PORT}`));
+app.listen(PORT, "127.0.0.1", () => console.log(`PWAApps BrowserAgent: http://localhost:${PORT}`));

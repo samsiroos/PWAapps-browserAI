@@ -4,18 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="A focused browser-agent workbench for configuring a model, running tasks, and approving sensitive actions.">
-  <title>Browser Agent Workbench</title>
+  <title>PWAApps BrowserAgent</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="noise"></div>
   <header class="topbar">
-    <a class="brand" href="#" aria-label="Browser Agent home">
-      <span class="brand-mark" aria-hidden="true"><span></span></span>
-      <span>Browser Agent</span>
+    <a class="brand" href="#" aria-label="PWAApps BrowserAgent home">
+      <img class="brand-logo" src="BrowserAgent.png" alt="">
+      <span>PWAApps BrowserAgent</span>
     </a>
     <div class="top-actions">
       <span class="connection" id="connectionBadge"><i></i><span>Demo mode</span></span>
+      <button class="icon-button" id="settingsButton" aria-label="Model settings" title="Model settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.09A1.7 1.7 0 0 0 8.96 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.57-1.03H3v-4h.09A1.7 1.7 0 0 0 4.6 8.94a1.7 1.7 0 0 0-.34-1.88L4.2 7l2.83-2.83.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 10 3.01V3h4v.09a1.7 1.7 0 0 0 1.03 1.48 1.7 1.7 0 0 0 1.88-.34l.06-.06L19.8 7l-.06.06a1.7 1.7 0 0 0-.34 1.88A1.7 1.7 0 0 0 20.97 10H21v4h-.09A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+      </button>
       <button class="icon-button" id="themeButton" aria-label="Toggle theme" title="Toggle theme">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.64 5.64l1.42 1.42m9.88 9.88 1.42 1.42m0-12.72-1.42 1.42M7.06 16.94l-1.42 1.42M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z"/></svg>
       </button>
@@ -25,17 +28,18 @@
   <main class="shell">
     <section class="intro">
       <div>
-        <p class="eyebrow">Agent workspace</p>
+        <p class="eyebrow">PWAApps BrowserAgent</p>
         <h1>Give the browser<br><em>a job to do.</em></h1>
       </div>
       <p class="lede">Configure any OpenAI-compatible model, describe an outcome, then watch the agent reason, browse, and pause for your approval.</p>
     </section>
 
-    <div class="workspace">
-      <aside class="setup-card card">
+    <div class="config-backdrop" id="configBackdrop" hidden></div>
+    <div class="workspace" id="workspace">
+      <aside class="setup-card card" id="setupCard" hidden>
         <div class="card-heading">
           <div><span class="step-number">01</span><h2>Model setup</h2></div>
-          <button class="text-button" id="testConnection">Test</button>
+          <button class="save-config-button" id="saveConfigButton">Save settings</button>
         </div>
 
         <label class="field">

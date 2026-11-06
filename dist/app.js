@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { running: false, stopped: false, pending: null, localRuntime: false, runId: null, seenEvents: new Set(), pollTimer: null, waitingKind: null };
+const state = { running: false, stopped: false, pending: null, localRuntime: false, runId: null, seenEvents: new Set(), pollTimer: null, waitingKind: null, configRequired: false };
 const CONFIG_KEY="browser-agent-config-v1";
 const providers = {
   openai: { endpoint: "https://api.openai.com/v1", model: "gpt-4.1-mini" },
@@ -12,6 +12,9 @@ const rtlPattern = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFC]/;
 function applyDirection(element,text){const rtl=rtlPattern.test(text||"");element.dir=rtl?"rtl":"ltr";element.classList.toggle("rtl",rtl)}
 function saveConfig(){try{localStorage.setItem(CONFIG_KEY,JSON.stringify({provider:$("provider").value,endpoint:$("apiEndpoint").value,apiKey:$("apiKey").value,model:$("modelName").value,approvalPolicy:$("approvalPolicy").value}))}catch{}}
 function restoreConfig(){try{const saved=JSON.parse(localStorage.getItem(CONFIG_KEY)||"null");if(!saved)return;$("provider").value=saved.provider||"openai";$("apiEndpoint").value=saved.endpoint??providers[$("provider").value].endpoint;$("apiKey").value=saved.apiKey||"";$("modelName").value=saved.model??providers[$("provider").value].model;$("approvalPolicy").value=saved.approvalPolicy||"risky"}catch{}}
+function configIsValid(){return Boolean($("apiEndpoint").value.trim()&&$("apiKey").value.trim()&&($("provider").value==="pwaapps"||$("modelName").value.trim()))}
+function openConfig(required=false){state.configRequired=required;$("setupCard").hidden=false;$("configBackdrop").hidden=false;document.body.classList.add("config-open");setTimeout(()=>$("provider").focus(),50)}
+function closeConfig(){if(state.configRequired&&!configIsValid())return;$("setupCard").hidden=true;$("configBackdrop").hidden=true;document.body.classList.remove("config-open");state.configRequired=false}
 const demoSteps = [
   ["plan", "Planning the approach", "I’ll search product listings, collect price and rating data, then compare the strongest candidates."],
   ["browser", "Opening search results", "Navigating to a product search and scanning the first page for relevant options."],
@@ -73,7 +76,7 @@ async function pollLocalRun(){
 }
 
 async function startRun(){
-  if(state.running)return;const task=$("taskInput").value.trim();if(!task){toast("Describe a task first");$("taskInput").focus();return}
+  if(state.running)return;if(!configIsValid()){toast("Set up your AI provider first");openConfig(true);return}const task=$("taskInput").value.trim();if(!task){toast("Describe a task first");$("taskInput").focus();return}
   state.running=true;resetRun();setStatus("active","Agent is working");
   try{
     if(state.localRuntime){if(!$("apiKey").value.trim())throw new Error("Add the selected provider's API key first.");await startLocalRun(task)}
@@ -95,6 +98,9 @@ $("provider").addEventListener("change",()=>{const preset=providers[$("provider"
 [$("apiEndpoint"),$("apiKey"),$("modelName"),$("approvalPolicy")].forEach(element=>element.addEventListener(element.tagName==="SELECT"?"change":"input",saveConfig));
 $("userAnswer").addEventListener("input",e=>applyDirection(e.currentTarget,e.currentTarget.value));$("userAnswer").addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="Enter")decide(true)});
 document.querySelectorAll("[data-prompt]").forEach(button=>button.addEventListener("click",()=>{$("taskInput").value=button.dataset.prompt;$("taskInput").focus()}));
-$("testConnection").addEventListener("click",async()=>{if(!$("apiKey").value.trim()){toast("Add an API key to test the connection");return}toast(state.localRuntime?"Local runtime ready — provider is verified on run":"Connection will be verified on the next run")});
+$("settingsButton").addEventListener("click",()=>openConfig(false));
+$("configBackdrop").addEventListener("click",()=>closeConfig());
+$("saveConfigButton").addEventListener("click",()=>{if(!configIsValid()){toast($("provider").value==="pwaapps"?"API endpoint and key are required":"API endpoint, key, and model are required");return}saveConfig();closeConfig();toast("AI settings saved")});
+if(!configIsValid())openConfig(true);
 
 (async()=>{try{const response=await fetch("/api/health",{cache:"no-store"});const data=await response.json();if(data.ok){state.localRuntime=true;setConnection(true);$("connectionBadge").querySelector("span").textContent="Local agent ready"}}catch{state.localRuntime=false}})();

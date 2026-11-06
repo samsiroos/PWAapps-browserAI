@@ -1,8 +1,8 @@
 {
-  "name": "independent-browser-agent",
+  "name": "pwaapps-browser-agent",
   "version": "1.0.0",
   "private": true,
-  "description": "Local Playwright browser agent with pluggable LLM providers",
+  "description": "PWAApps BrowserAgent with local Playwright automation and pluggable LLM providers",
   "type": "module",
   "scripts": {
     "start": "node server.js",

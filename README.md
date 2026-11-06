@@ -1,4 +1,4 @@
-# Browser Agent Workbench
+# PWAApps BrowserAgent
 
 A real local browser agent with a web dashboard, Playwright-controlled Chromium, pluggable LLM providers, an activity timeline, and approval gates.
 
