@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const state = { running: false, stopped: false, pending: null, localRuntime: false, runId: null, seenEvents: new Set(), pollTimer: null, waitingKind: null, configRequired: false, historyOpen: false };
 const CONFIG_KEY="browser-agent-config-v1";
+const heroScenes=["images/scene-metro.png","images/scene-greenhouse.png","images/scene-door.png"];
 const providers = {
   openai: { endpoint: "https://api.openai.com/v1", model: "gpt-4.1-mini" },
   gemini: { endpoint: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.5-flash" },
@@ -111,6 +112,7 @@ $("denyButton").addEventListener("click",()=>decide(false));
 $("keyToggle").addEventListener("click",()=>{const input=$("apiKey");input.type=input.type==="password"?"text":"password"});
 $("themeButton").addEventListener("click",()=>document.body.classList.toggle("dark"));
 restoreConfig();
+{const values=new Uint32Array(1);crypto.getRandomValues(values);const scene=heroScenes[values[0]%heroScenes.length];$("heroScene").style.setProperty("--scene-image",`url("${scene}")`)}
 $("provider").addEventListener("change",()=>{const preset=providers[$("provider").value];$("apiEndpoint").value=preset.endpoint;$("modelName").value=preset.model;saveConfig()});
 [$("apiEndpoint"),$("apiKey"),$("modelName"),$("approvalPolicy")].forEach(element=>element.addEventListener(element.tagName==="SELECT"?"change":"input",saveConfig));
 $("userAnswer").addEventListener("input",e=>applyDirection(e.currentTarget,e.currentTarget.value));$("userAnswer").addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="Enter")decide(true)});
