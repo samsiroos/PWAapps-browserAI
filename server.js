@@ -148,9 +148,33 @@ async function callLLM(config, messages) {
   return data.choices?.[0]?.message?.content || "";
 }
 
+function repairJsonControlChars(input) {
+  let output = "", inString = false, escaped = false;
+  for (const char of input) {
+    if (!inString) { output += char; if (char === '"') inString = true; continue; }
+    if (escaped) { output += char; escaped = false; continue; }
+    if (char === "\\") { output += char; escaped = true; continue; }
+    if (char === '"') { output += char; inString = false; continue; }
+    if (char === "\n") output += "\\n";
+    else if (char === "\r") output += "\\r";
+    else if (char === "\t") output += "\\t";
+    else if (char.charCodeAt(0) < 32) output += `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`;
+    else output += char;
+  }
+  return output;
+}
 function parseAction(raw) {
   const clean = raw.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
-  try { return JSON.parse(clean); } catch { const match = clean.match(/\{[\s\S]*\}/); if (match) return JSON.parse(match[0]); throw new Error("Model returned invalid action JSON."); }
+  const candidates = [clean, clean.match(/\{[\s\S]*\}/)?.[0]].filter(Boolean);
+  let lastError;
+  for (const candidate of candidates) {
+    try {
+      const action = JSON.parse(repairJsonControlChars(candidate));
+      if (!action?.action) throw new Error("JSON response is missing an action field.");
+      return action;
+    } catch (error) { lastError = error; }
+  }
+  throw new Error(`Model returned invalid action JSON: ${lastError?.message || "unknown parse error"}`);
 }
 function sensitive(action, control) {
   const content = `${action.reason || ""} ${action.text || ""} ${control?.text || ""}`.toLowerCase();
@@ -185,7 +209,14 @@ async function executeRun(run, task) {
       const state = await safePageState(page);
       messages.push({ role: "user", content: `Step ${step}. Current page state:\n${JSON.stringify(state)}` });
       const raw = await callLLM(run.config, messages);
-      const action = parseAction(raw);
+      let action;
+      try { action = parseAction(raw); }
+      catch (parseError) {
+        event(run, "error", "Invalid model response — retrying", parseError.message);
+        messages.push({ role: "assistant", content: raw });
+        messages.push({ role: "user", content: "Your previous response was not valid JSON. Return exactly one JSON action object. Escape all newlines and control characters inside string values. Do not use markdown fences." });
+        continue;
+      }
       messages.push({ role: "assistant", content: JSON.stringify(action) });
       event(run, action.action === "finish" ? "response" : "browser", action.reason || `Step ${step}: ${action.action}`, action.answer || action.question || action.url || action.text || "");
       if (action.action === "finish") { run.status = "completed"; break; }
