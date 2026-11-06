@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { running: false, stopped: false, pending: null, localRuntime: false, runId: null, seenEvents: new Set(), pollTimer: null, waitingKind: null, configRequired: false };
+const state = { running: false, stopped: false, pending: null, localRuntime: false, runId: null, seenEvents: new Set(), pollTimer: null, waitingKind: null, configRequired: false, historyOpen: false };
 const CONFIG_KEY="browser-agent-config-v1";
 const providers = {
   openai: { endpoint: "https://api.openai.com/v1", model: "gpt-4.1-mini" },
@@ -32,7 +32,7 @@ function addStep(kind,title,text){
   row.querySelector("h3").textContent=title;row.querySelector("p").textContent=text;applyDirection(row.querySelector(".timeline-content"),`${title} ${text}`);$("timeline").appendChild(row);row.scrollIntoView({behavior:"smooth",block:"nearest"});
 }
 function resetRun(){state.stopped=false;$("emptyState").hidden=true;$("timeline").hidden=false;$("timeline").innerHTML="";$("approvalCard").hidden=true;$("stopButton").hidden=false;$("runButton").classList.add("running")}
-function finishRun(){state.running=false;$("stopButton").hidden=true;$("runButton").classList.remove("running");setStatus("","Run complete")}
+function finishRun(){state.running=false;$("stopButton").hidden=true;$("runButton").classList.remove("running");setStatus("","Run complete");if(state.historyOpen)loadJobs()}
 function demoAnswer(task){return `I completed the research workflow for: “${task}”\n\nTop choices\n1. Keychron K2 — best overall balance of build quality, wireless flexibility, and value.\n2. Logitech K380 — best budget pick for portability and multi-device use.\n3. Royal Kludge RK84 — best feature set for users who want mechanical switches and customization.\n\nBefore buying, verify the live price, keyboard layout, and switch type on the seller’s page.`}
 
 async function runDemo(task){
@@ -85,6 +85,23 @@ async function startRun(){
 }
 function setConnection(live){const badge=$("connectionBadge");badge.classList.toggle("live",live);badge.querySelector("span").textContent=live?"API connected":"Demo mode"}
 
+function newJob(){if(state.running){toast("Stop the current job before starting a new one");return}state.runId=null;state.seenEvents.clear();$("taskInput").value="";applyDirection($("taskInput"),"");$("timeline").innerHTML="";$("timeline").hidden=true;$("emptyState").hidden=false;$("approvalCard").hidden=true;setStatus("","Ready for a task");$("taskInput").focus()}
+function openHistory(){state.historyOpen=true;$("historyPanel").hidden=false;$("historyBackdrop").hidden=false;loadJobs()}
+function closeHistory(){state.historyOpen=false;$("historyPanel").hidden=true;$("historyBackdrop").hidden=true}
+async function loadJobs(){
+  const list=$("historyList");list.innerHTML='<div class="history-empty">Loading jobs…</div>';
+  try{const response=await fetch("/api/jobs",{cache:"no-store"});if(!response.ok)throw new Error();const data=await response.json();list.innerHTML="";if(!data.jobs.length){list.innerHTML='<div class="history-empty">No saved jobs yet.<br>Your next run will appear here.</div>';return}data.jobs.forEach(job=>list.appendChild(jobCard(job)))}catch{list.innerHTML='<div class="history-empty">Job history is available in the local app at localhost:3210.</div>'}
+}
+function jobCard(job){
+  const card=document.createElement("article");card.className="job-item";card.innerHTML='<div class="job-item-top"><h3></h3><span class="job-status"></span></div><p class="job-meta"></p><div class="job-actions"><button data-action="open">Open</button><button data-action="rerun">Rerun</button><button class="delete-job" data-action="delete">Delete</button></div>';
+  card.querySelector("h3").textContent=job.task;applyDirection(card.querySelector("h3"),job.task);const badge=card.querySelector(".job-status");badge.textContent=job.status;badge.classList.add(job.status);card.querySelector(".job-meta").textContent=`${job.provider||"custom"}${job.model?` · ${job.model}`:" · auto"} · ${new Date(Number(job.created_at)).toLocaleString()}`;
+  card.querySelector('[data-action="open"]').addEventListener("click",()=>openSavedJob(job.id));card.querySelector('[data-action="rerun"]').addEventListener("click",()=>rerunJob(job.id));card.querySelector('[data-action="delete"]').addEventListener("click",()=>deleteJob(job.id,job.task));return card;
+}
+async function getJob(id){const response=await fetch(`/api/jobs/${id}`,{cache:"no-store"});const job=await response.json();if(!response.ok)throw new Error(job.error||"Could not load job");return job}
+async function openSavedJob(id){try{const job=await getJob(id);closeHistory();$("taskInput").value=job.task;applyDirection($("taskInput"),job.task);$("emptyState").hidden=true;$("timeline").hidden=false;$("timeline").innerHTML="";(job.events||[]).forEach(item=>addStep(item.kind,item.title,item.text));setStatus("",`Saved job · ${job.status}`)}catch(error){toast(error.message)}}
+async function rerunJob(id){if(state.running){toast("Stop the current job before rerunning another");return}try{const job=await getJob(id);$("taskInput").value=job.task;$("provider").value=job.provider||$("provider").value;$("apiEndpoint").value=job.endpoint||$("apiEndpoint").value;$("modelName").value=job.model||"";saveConfig();closeHistory();startRun()}catch(error){toast(error.message)}}
+async function deleteJob(id,task){if(!confirm(`Delete this saved job?\n\n${task}`))return;try{const response=await fetch(`/api/jobs/${id}`,{method:"DELETE"});const data=await response.json();if(!response.ok)throw new Error(data.error||"Could not delete job");toast("Job deleted");loadJobs()}catch(error){toast(error.message)}}
+
 $("runButton").addEventListener("click",startRun);$("taskInput").addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")startRun()});
 $("taskInput").addEventListener("input",e=>applyDirection(e.currentTarget,e.currentTarget.value));applyDirection($("taskInput"),$("taskInput").value);
 $("stopButton").addEventListener("click",async()=>{state.stopped=true;state.running=false;if(state.runId)await fetch(`/api/runs/${state.runId}/stop`,{method:"POST"});if(state.pendingResolve)state.pendingResolve(false);$("approvalCard").hidden=true;if(!state.localRuntime)addStep("error","Run stopped","The run was stopped by you.");finishRun()});
@@ -99,6 +116,7 @@ $("provider").addEventListener("change",()=>{const preset=providers[$("provider"
 $("userAnswer").addEventListener("input",e=>applyDirection(e.currentTarget,e.currentTarget.value));$("userAnswer").addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="Enter")decide(true)});
 document.querySelectorAll("[data-prompt]").forEach(button=>button.addEventListener("click",()=>{$("taskInput").value=button.dataset.prompt;$("taskInput").focus()}));
 $("settingsButton").addEventListener("click",()=>openConfig(false));
+$("newJobButton").addEventListener("click",newJob);$("historyButton").addEventListener("click",openHistory);$("closeHistory").addEventListener("click",closeHistory);$("historyBackdrop").addEventListener("click",closeHistory);
 $("configBackdrop").addEventListener("click",()=>closeConfig());
 $("saveConfigButton").addEventListener("click",()=>{if(!configIsValid()){toast($("provider").value==="pwaapps"?"API endpoint and key are required":"API endpoint, key, and model are required");return}saveConfig();closeConfig();toast("AI settings saved")});
 if(!configIsValid())openConfig(true);

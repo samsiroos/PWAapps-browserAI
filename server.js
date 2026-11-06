@@ -3,11 +3,19 @@ import { chromium } from "playwright";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 
 const app = express();
 const root = path.dirname(fileURLToPath(import.meta.url));
 const runs = new Map();
 const PORT = Number(process.env.PORT || 3210);
+const db = new DatabaseSync(path.join(root, "browser-agent.sqlite"));
+db.exec(`CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY, task TEXT NOT NULL, provider TEXT, endpoint TEXT, model TEXT,
+  approval_policy TEXT, status TEXT NOT NULL, events_json TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);`);
+db.prepare("UPDATE jobs SET status = 'interrupted', updated_at = ? WHERE status IN ('starting','running','waiting')").run(Date.now());
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(root, "dist")));
@@ -18,6 +26,8 @@ app.post("/api/runs", async (req, res) => {
   if (!task || !apiKey || (!model && provider !== "pwaapps")) return res.status(400).json({ error: provider === "pwaapps" ? "Task and API key are required." : "Task, API key, and model are required." });
   const run = { id: crypto.randomUUID(), status: "starting", events: [], waiting: null, stopped: false, config: { provider, endpoint, apiKey, model, approvalPolicy } };
   runs.set(run.id, run);
+  const now = Date.now();
+  db.prepare("INSERT INTO jobs (id,task,provider,endpoint,model,approval_policy,status,events_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)").run(run.id, task, provider || "custom", endpoint || "", model || "", approvalPolicy, run.status, "[]", now, now);
   res.status(202).json({ id: run.id });
   executeRun(run, task).catch(error => fail(run, error));
 });
@@ -45,8 +55,29 @@ app.post("/api/runs/:id/stop", (req, res) => {
   res.json({ ok: true });
 });
 
-function event(run, kind, title, text) { run.events.push({ id: crypto.randomUUID(), kind, title, text, at: Date.now() }); }
-function fail(run, error) { run.status = "failed"; event(run, "error", "Agent stopped", error.message || String(error)); run.config.apiKey = ""; }
+app.get("/api/jobs", (_req, res) => {
+  const rows = db.prepare("SELECT id,task,provider,model,status,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200").all();
+  res.json({ jobs: rows });
+});
+
+app.get("/api/jobs/:id", (req, res) => {
+  const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get(req.params.id);
+  if (!row) return res.status(404).json({ error: "Job not found" });
+  res.json({ ...row, events: JSON.parse(row.events_json || "[]") });
+});
+
+app.delete("/api/jobs/:id", (req, res) => {
+  const run = runs.get(req.params.id);
+  if (run && !["completed", "failed", "stopped", "interrupted"].includes(run.status)) return res.status(409).json({ error: "Stop the active job before deleting it." });
+  const result = db.prepare("DELETE FROM jobs WHERE id = ?").run(req.params.id);
+  runs.delete(req.params.id);
+  if (!result.changes) return res.status(404).json({ error: "Job not found" });
+  res.json({ ok: true });
+});
+
+function persistRun(run) { db.prepare("UPDATE jobs SET status = ?, events_json = ?, updated_at = ? WHERE id = ?").run(run.status, JSON.stringify(run.events), Date.now(), run.id); }
+function event(run, kind, title, text) { run.events.push({ id: crypto.randomUUID(), kind, title, text, at: Date.now() }); persistRun(run); }
+function fail(run, error) { run.status = "failed"; event(run, "error", "Agent stopped", error.message || String(error)); run.config.apiKey = ""; persistRun(run); }
 
 async function pageState(page) {
   return page.evaluate(() => {
@@ -185,6 +216,7 @@ async function executeRun(run, task) {
     else if (run.status === "running") { run.status = "completed"; event(run, "response", "Step limit reached", "The agent stopped after 30 steps. Refine the request and run again if needed."); }
   } finally {
     run.config.apiKey = "";
+    persistRun(run);
     if (run.stopped) await browser.close();
   }
 }

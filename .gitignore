@@ -1,3 +1,5 @@
 outputs/
 node_modules/
 .env
+browser-agent.sqlite
+browser-agent.sqlite-*

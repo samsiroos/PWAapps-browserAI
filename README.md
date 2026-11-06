@@ -17,3 +17,5 @@ Choose OpenAI/GPT, Gemini, OpenRouter, PWAApps AI, or a custom OpenAI-compatible
 PWAApps AI defaults to `https://licence.pwaapps.com:443/airelay/api/v1` and leaves the model blank so the relay selects it automatically.
 
 The hosted version remains a dashboard/demo because hosted pages cannot control arbitrary browser tabs. Real automation is available through the local runtime.
+
+Job history is stored locally in `browser-agent.sqlite` beside the project. API keys are never written to the job database. Use the History panel to open, rerun, or delete saved jobs.
