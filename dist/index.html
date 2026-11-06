@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="A focused browser-agent workbench for configuring a model, running tasks, and approving sensitive actions.">
+  <title>Browser Agent Workbench</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="noise"></div>
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="Browser Agent home">
+      <span class="brand-mark" aria-hidden="true"><span></span></span>
+      <span>Browser Agent</span>
+    </a>
+    <div class="top-actions">
+      <span class="connection" id="connectionBadge"><i></i><span>Demo mode</span></span>
+      <button class="icon-button" id="themeButton" aria-label="Toggle theme" title="Toggle theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.64 5.64l1.42 1.42m9.88 9.88 1.42 1.42m0-12.72-1.42 1.42M7.06 16.94l-1.42 1.42M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="intro">
+      <div>
+        <p class="eyebrow">Agent workspace</p>
+        <h1>Give the browser<br><em>a job to do.</em></h1>
+      </div>
+      <p class="lede">Configure any OpenAI-compatible model, describe an outcome, then watch the agent reason, browse, and pause for your approval.</p>
+    </section>
+
+    <div class="workspace">
+      <aside class="setup-card card">
+        <div class="card-heading">
+          <div><span class="step-number">01</span><h2>Model setup</h2></div>
+          <button class="text-button" id="testConnection">Test</button>
+        </div>
+
+        <label class="field">
+          <span>API endpoint</span>
+          <input id="apiEndpoint" type="url" value="https://api.openai.com/v1" autocomplete="url" spellcheck="false">
+        </label>
+        <label class="field">
+          <span>API key</span>
+          <span class="password-wrap">
+            <input id="apiKey" type="password" placeholder="sk-••••••••••••••••" autocomplete="off">
+            <button id="keyToggle" type="button" aria-label="Show API key">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.6"/></svg>
+            </button>
+          </span>
+          <small>Kept only in this tab. Never stored.</small>
+        </label>
+        <label class="field">
+          <span>Model</span>
+          <input id="modelName" type="text" value="gpt-4.1-mini" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field">
+          <span>Approval policy</span>
+          <select id="approvalPolicy">
+            <option value="risky">Ask before sensitive actions</option>
+            <option value="all">Ask before every action</option>
+            <option value="none">Run without approval</option>
+          </select>
+        </label>
+
+        <div class="privacy-note">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V8a5 5 0 0 1 10 0v2m-11 0h12v10H6V10Z"/></svg>
+          <p><strong>Your key stays local.</strong><br>Requests go directly from this browser to your endpoint.</p>
+        </div>
+      </aside>
+
+      <section class="run-column">
+        <div class="task-card card">
+          <div class="card-heading">
+            <div><span class="step-number">02</span><h2>Task</h2></div>
+            <span class="shortcut">⌘ ↵</span>
+          </div>
+          <div class="composer">
+            <textarea id="taskInput" rows="4" placeholder="What should the agent accomplish?">Find a highly rated wireless keyboard under $100 and compare the top three options.</textarea>
+            <div class="composer-footer">
+              <div class="quick-actions" aria-label="Task examples">
+                <button data-prompt="Research the best noise-cancelling headphones under $300 and compare the top three.">Research</button>
+                <button data-prompt="Summarize the main pricing plans on a product website and identify the best value.">Summarize</button>
+                <button data-prompt="Find three available hotels for a weekend trip and compare location, rating, and price.">Compare</button>
+              </div>
+              <button class="run-button" id="runButton"><span>Run agent</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="activity-card card" id="activityCard">
+          <div class="activity-header">
+            <div>
+              <span class="status-dot" id="statusDot"></span>
+              <div><p class="activity-label">Agent activity</p><h2 id="runTitle">Ready for a task</h2></div>
+            </div>
+            <button class="stop-button" id="stopButton" hidden>Stop</button>
+          </div>
+
+          <div class="empty-state" id="emptyState">
+            <div class="orbit" aria-hidden="true"><span></span><i></i></div>
+            <h3>Your run will appear here</h3>
+            <p>Steps, browser observations, questions, and the final response stay together in one timeline.</p>
+          </div>
+
+          <div class="timeline" id="timeline" hidden aria-live="polite"></div>
+
+          <div class="approval" id="approvalCard" hidden>
+            <div class="approval-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v4m0 4h.01M10.3 3.8 2.6 17.2A2 2 0 0 0 4.3 20h15.4a2 2 0 0 0 1.7-2.8L13.7 3.8a2 2 0 0 0-3.4 0Z"/></svg>
+            </div>
+            <div class="approval-copy">
+              <span>Approval required</span>
+              <h3 id="approvalTitle">The agent wants to continue</h3>
+              <p id="approvalText">Review this action before it runs.</p>
+              <div class="approval-actions">
+                <button class="deny" id="denyButton">Deny</button>
+                <button class="approve" id="approveButton">Approve action</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
