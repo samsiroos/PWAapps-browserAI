@@ -15,7 +15,7 @@ app.get("/api/health", (_req, res) => res.json({ ok: true, runtime: "playwright"
 
 app.post("/api/runs", async (req, res) => {
   const { task, provider, endpoint, apiKey, model, approvalPolicy = "risky" } = req.body || {};
-  if (!task || !apiKey || !model) return res.status(400).json({ error: "Task, API key, and model are required." });
+  if (!task || !apiKey || (!model && provider !== "pwaapps")) return res.status(400).json({ error: provider === "pwaapps" ? "Task and API key are required." : "Task, API key, and model are required." });
   const run = { id: crypto.randomUUID(), status: "starting", events: [], waiting: null, stopped: false, config: { provider, endpoint, apiKey, model, approvalPolicy } };
   runs.set(run.id, run);
   res.status(202).json({ id: run.id });
@@ -78,11 +78,13 @@ async function callLLM(config, messages) {
     const data = await response.json();
     return data.candidates?.[0]?.content?.parts?.map(p => p.text).join("") || "";
   }
-  const defaults = { openai: "https://api.openai.com/v1", openrouter: "https://openrouter.ai/api/v1", pwaapps: "https://ai.pwaapps.com/v1" };
+  const defaults = { openai: "https://api.openai.com/v1", openrouter: "https://openrouter.ai/api/v1", pwaapps: "https://licence.pwaapps.com:443/airelay/api/v1" };
   const base = (config.endpoint || defaults[provider] || "").replace(/\/$/, "");
   const headers = { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` };
   if (provider === "openrouter") { headers["HTTP-Referer"] = `http://localhost:${PORT}`; headers["X-Title"] = "Independent Browser Agent"; }
-  const response = await fetch(`${base}/chat/completions`, { method: "POST", headers, body: JSON.stringify({ model: config.model, messages: [{ role: "system", content: SYSTEM }, ...messages], temperature: 0.1, response_format: { type: "json_object" } }) });
+  const requestBody = { messages: [{ role: "system", content: SYSTEM }, ...messages], temperature: 0.1, response_format: { type: "json_object" } };
+  if (config.model) requestBody.model = config.model;
+  const response = await fetch(`${base}/chat/completions`, { method: "POST", headers, body: JSON.stringify(requestBody) });
   if (!response.ok) throw new Error(`LLM API ${response.status}: ${(await response.text()).slice(0, 400)}`);
   const data = await response.json();
   return data.choices?.[0]?.message?.content || "";

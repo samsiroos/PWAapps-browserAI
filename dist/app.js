@@ -4,7 +4,7 @@ const providers = {
   openai: { endpoint: "https://api.openai.com/v1", model: "gpt-4.1-mini" },
   gemini: { endpoint: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-2.5-flash" },
   openrouter: { endpoint: "https://openrouter.ai/api/v1", model: "openai/gpt-4.1-mini" },
-  pwaapps: { endpoint: "https://ai.pwaapps.com/v1", model: "gpt-4.1-mini" },
+  pwaapps: { endpoint: "https://licence.pwaapps.com:443/airelay/api/v1", model: "" },
   custom: { endpoint: "", model: "" }
 };
 const demoSteps = [
@@ -43,7 +43,8 @@ async function callModel(task){
   addStep("plan","Sending task to model",`Using ${model} through the configured OpenAI-compatible endpoint.`);
   const prompt=`You are a careful browser agent. The browser tools are represented by this workbench, so do not claim you actually opened pages. Given the user's browser task, return a concise execution plan, say what information or approval you would need, and provide the best useful response possible. Clearly label assumptions. User task: ${task}`;
   try{
-    const res=await fetch(`${base}/chat/completions`,{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${key}`},body:JSON.stringify({model,messages:[{role:"system",content:"Be concise, transparent, and safety-conscious."},{role:"user",content:prompt}],temperature:.3})});
+    const body={messages:[{role:"system",content:"Be concise, transparent, and safety-conscious."},{role:"user",content:prompt}],temperature:.3};if(model)body.model=model;
+    const res=await fetch(`${base}/chat/completions`,{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${key}`},body:JSON.stringify(body)});
     if(!res.ok){const detail=await res.text();throw new Error(`${res.status} ${detail.slice(0,180)}`)}
     const data=await res.json();const answer=data.choices?.[0]?.message?.content||"The model returned no text response.";
     addStep("response","Model response",answer);finishRun();setConnection(true);
