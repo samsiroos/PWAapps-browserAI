@@ -13,9 +13,14 @@ const db = new DatabaseSync(path.join(root, "browser-agent.sqlite"));
 db.exec(`CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, task TEXT NOT NULL, provider TEXT, endpoint TEXT, model TEXT,
   approval_policy TEXT, status TEXT NOT NULL, events_json TEXT NOT NULL DEFAULT '[]',
-  parent_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  parent_id TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0, remaining_tokens INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );`);
 try { db.exec("ALTER TABLE jobs ADD COLUMN parent_id TEXT"); } catch {}
+try { db.exec("ALTER TABLE jobs ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE jobs ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE jobs ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE jobs ADD COLUMN remaining_tokens INTEGER"); } catch {}
 db.prepare("UPDATE jobs SET status = 'interrupted', updated_at = ? WHERE status IN ('starting','running','waiting')").run(Date.now());
 
 app.use(express.json({ limit: "1mb" }));
@@ -25,11 +30,11 @@ app.get("/api/health", (_req, res) => res.json({ ok: true, runtime: "playwright"
 app.post("/api/runs", async (req, res) => {
   const { task, provider, endpoint, apiKey, model, approvalPolicy = "risky", continueFrom = null } = req.body || {};
   if (!task || !apiKey || (!model && provider !== "pwaapps")) return res.status(400).json({ error: provider === "pwaapps" ? "Task and API key are required." : "Task, API key, and model are required." });
-  const run = { id: crypto.randomUUID(), status: "starting", events: [], waiting: null, stopped: false, config: { provider, endpoint, apiKey, model, approvalPolicy } };
+  const run = { id: crypto.randomUUID(), status: "starting", events: [], waiting: null, stopped: false, usage: { input: 0, output: 0, total: 0, remaining: null }, config: { provider, endpoint, apiKey, model, approvalPolicy } };
   runs.set(run.id, run);
   const now = Date.now();
   const previousJob = continueFrom ? db.prepare("SELECT task,events_json FROM jobs WHERE id = ?").get(continueFrom) : null;
-  db.prepare("INSERT INTO jobs (id,task,provider,endpoint,model,approval_policy,status,events_json,parent_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(run.id, task, provider || "custom", endpoint || "", model || "", approvalPolicy, run.status, "[]", previousJob ? continueFrom : null, now, now);
+  db.prepare("INSERT INTO jobs (id,task,provider,endpoint,model,approval_policy,status,events_json,parent_id,input_tokens,output_tokens,total_tokens,remaining_tokens,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(run.id, task, provider || "custom", endpoint || "", model || "", approvalPolicy, run.status, "[]", previousJob ? continueFrom : null, 0, 0, 0, null, now, now);
   res.status(202).json({ id: run.id });
   executeRun(run, task, previousJob).catch(error => fail(run, error));
 });
@@ -37,7 +42,7 @@ app.post("/api/runs", async (req, res) => {
 app.get("/api/runs/:id", (req, res) => {
   const run = runs.get(req.params.id);
   if (!run) return res.status(404).json({ error: "Run not found" });
-  res.json({ id: run.id, status: run.status, events: run.events, waiting: run.waiting && { kind: run.waiting.kind, title: run.waiting.title, detail: run.waiting.detail } });
+  res.json({ id: run.id, status: run.status, events: run.events, usage: run.usage, waiting: run.waiting && { kind: run.waiting.kind, title: run.waiting.title, detail: run.waiting.detail } });
 });
 
 app.post("/api/runs/:id/decision", (req, res) => {
@@ -57,8 +62,15 @@ app.post("/api/runs/:id/stop", (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/api/optimize", async (req, res) => {
+  const { task, provider, endpoint, apiKey, model } = req.body || {};
+  if (!task || !apiKey || (!model && provider !== "pwaapps")) return res.status(400).json({ error: "Task and valid AI settings are required." });
+  try { res.json(await optimizeTask({ provider, endpoint, apiKey, model }, task)); }
+  catch (error) { res.status(502).json({ error: error.message || String(error) }); }
+});
+
 app.get("/api/jobs", (_req, res) => {
-  const rows = db.prepare("SELECT id,task,provider,model,status,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200").all();
+  const rows = db.prepare("SELECT id,task,provider,model,status,input_tokens,output_tokens,total_tokens,remaining_tokens,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200").all();
   res.json({ jobs: rows });
 });
 
@@ -77,7 +89,7 @@ app.delete("/api/jobs/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-function persistRun(run) { db.prepare("UPDATE jobs SET status = ?, events_json = ?, updated_at = ? WHERE id = ?").run(run.status, JSON.stringify(run.events), Date.now(), run.id); }
+function persistRun(run) { db.prepare("UPDATE jobs SET status = ?, events_json = ?, input_tokens = ?, output_tokens = ?, total_tokens = ?, remaining_tokens = ?, updated_at = ? WHERE id = ?").run(run.status, JSON.stringify(run.events), run.usage?.input || 0, run.usage?.output || 0, run.usage?.total || 0, run.usage?.remaining ?? null, Date.now(), run.id); }
 function event(run, kind, title, text) { run.events.push({ id: crypto.randomUUID(), kind, title, text, at: Date.now() }); persistRun(run); }
 function fail(run, error) { run.status = "failed"; event(run, "error", "Agent stopped", error.message || String(error)); run.config.apiKey = ""; persistRun(run); }
 
@@ -134,10 +146,17 @@ const SYSTEM = `You are an autonomous browser agent controlling Playwright. Retu
 {"action":"back","reason":"..."}
 {"action":"wait","ms":1500,"reason":"..."}
 {"action":"ask_user","question":"..."}
-{"action":"finish","answer":"..."}
+{"action":"finish","answer":"detailed final result","summary":"short job summary","limitations":"open items or limitations","sources":["https://exact-observed-url"],"next_step":"one useful follow-up"}
 Use only control IDs from the current page. Never claim an action succeeded before observing the next state. Before browsing, use ask_user when one or two missing preferences would materially improve the result—for example budget, bedrooms, parking, date, location radius, model year, or must-have features. Do not ask unnecessary questions when the task is already specific. Prefer direct navigation to a search engine or an observed link; never invent a site's URL structure.
 For prices and comparisons: verify against at least two independent marketplace domains when possible; cite the exact URLs actually observed; group vehicle prices by model year and trim; distinguish listing price from factory price; report the observation date; and never reuse prices from memory. Extract several comparable listings, remove obvious placeholder/error/outlier values, and describe the filtering. Do not merge unrelated model years into a misleading range. For Iranian vehicle research, note that Bama uses https://bama.ir/car/jac-s5 and https://bama.ir/car/haima-s7; use Divar (https://divar.ir) or another independent active marketplace as a cross-check. If sources disagree, show the disagreement instead of averaging it away.
 Do not purchase, submit forms, log in, send messages, or expose secrets without approval. Every finish answer must contain: (1) a clearly labeled Final summary, (2) the key findings or completed work, (3) limitations or items still open, (4) a Sources section with exact observed URLs when browsing occurred, and (5) one short suggestion for a useful next step that the user can continue with.`;
+
+function remainingTokens(response, usage = {}) {
+  const raw = response.headers.get("x-ratelimit-remaining-tokens") ?? response.headers.get("x-ratelimit-remaining-token") ?? usage.remaining_tokens ?? usage.remainingTokens ?? null;
+  if (raw === null || raw === "") return null;
+  const value = Number(String(raw).replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(value) ? value : null;
+}
 
 async function callLLM(config, messages) {
   const provider = config.provider || "custom";
@@ -147,7 +166,8 @@ async function callLLM(config, messages) {
     const response = await fetch(`${base}/models/${encodeURIComponent(config.model)}:generateContent?key=${encodeURIComponent(config.apiKey)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: SYSTEM }] }, contents, generationConfig: { temperature: 0.1, responseMimeType: "application/json" } }) });
     if (!response.ok) throw new Error(`Gemini API ${response.status}: ${(await response.text()).slice(0, 400)}`);
     const data = await response.json();
-    return data.candidates?.[0]?.content?.parts?.map(p => p.text).join("") || "";
+    const usage = data.usageMetadata || {};
+    return { text: data.candidates?.[0]?.content?.parts?.map(p => p.text).join("") || "", usage: { input: usage.promptTokenCount || 0, output: usage.candidatesTokenCount || 0, total: usage.totalTokenCount || 0, remaining: remainingTokens(response, usage) } };
   }
   const defaults = { openai: "https://api.openai.com/v1", openrouter: "https://openrouter.ai/api/v1", pwaapps: "https://licence.pwaapps.com:443/airelay/api/v1" };
   const base = (config.endpoint || defaults[provider] || "").replace(/\/$/, "");
@@ -158,7 +178,33 @@ async function callLLM(config, messages) {
   const response = await fetch(`${base}/chat/completions`, { method: "POST", headers, body: JSON.stringify(requestBody) });
   if (!response.ok) throw new Error(`LLM API ${response.status}: ${(await response.text()).slice(0, 400)}`);
   const data = await response.json();
-  return data.choices?.[0]?.message?.content || "";
+  const usage = data.usage || {};
+  const input = usage.prompt_tokens ?? usage.input_tokens ?? 0;
+  const output = usage.completion_tokens ?? usage.output_tokens ?? 0;
+  return { text: data.choices?.[0]?.message?.content || "", usage: { input, output, total: usage.total_tokens ?? (input + output), remaining: remainingTokens(response, usage) } };
+}
+
+async function optimizeTask(config, task) {
+  const instruction = "Improve the user's browser-agent task for accuracy and useful results. Preserve the original intent and language. Add missing research constraints, verification requirements, source expectations, dates, comparison criteria, and a clear output format when helpful. Do not answer the task. Return only the optimized task text without markdown fences.";
+  const provider = config.provider || "custom";
+  if (provider === "gemini") {
+    const base = (config.endpoint || "https://generativelanguage.googleapis.com/v1beta").replace(/\/$/, "");
+    const response = await fetch(`${base}/models/${encodeURIComponent(config.model)}:generateContent?key=${encodeURIComponent(config.apiKey)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: instruction }] }, contents: [{ role: "user", parts: [{ text: task }] }], generationConfig: { temperature: 0.2 } }) });
+    if (!response.ok) throw new Error(`Gemini API ${response.status}: ${(await response.text()).slice(0, 400)}`);
+    const data = await response.json(), usage = data.usageMetadata || {};
+    return { optimized: data.candidates?.[0]?.content?.parts?.map(p => p.text).join("").trim() || task, usage: { input: usage.promptTokenCount || 0, output: usage.candidatesTokenCount || 0, total: usage.totalTokenCount || 0, remaining: remainingTokens(response, usage) } };
+  }
+  const defaults = { openai: "https://api.openai.com/v1", openrouter: "https://openrouter.ai/api/v1", pwaapps: "https://licence.pwaapps.com:443/airelay/api/v1" };
+  const base = (config.endpoint || defaults[provider] || "").replace(/\/$/, "");
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` };
+  if (provider === "openrouter") { headers["HTTP-Referer"] = `http://localhost:${PORT}`; headers["X-Title"] = "PWAApps BrowserAgent"; }
+  const body = { messages: [{ role: "system", content: instruction }, { role: "user", content: task }], temperature: 0.2 };
+  if (config.model) body.model = config.model;
+  const response = await fetch(`${base}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body) });
+  if (!response.ok) throw new Error(`LLM API ${response.status}: ${(await response.text()).slice(0, 400)}`);
+  const data = await response.json(), usage = data.usage || {};
+  const input = usage.prompt_tokens ?? usage.input_tokens ?? 0, output = usage.completion_tokens ?? usage.output_tokens ?? 0;
+  return { optimized: (data.choices?.[0]?.message?.content || task).trim(), usage: { input, output, total: usage.total_tokens ?? (input + output), remaining: remainingTokens(response, usage) } };
 }
 
 function repairJsonControlChars(input) {
@@ -231,7 +277,13 @@ async function executeRun(run, task, previousJob = null) {
     for (let step = 1; step <= 30 && !run.stopped; step++) {
       const state = await safePageState(page);
       messages.push({ role: "user", content: `Step ${step}. Current page state:\n${JSON.stringify(state)}` });
-      const raw = await callLLM(run.config, messages);
+      const llm = await callLLM(run.config, messages);
+      run.usage.input += Number(llm.usage?.input || 0);
+      run.usage.output += Number(llm.usage?.output || 0);
+      run.usage.total += Number(llm.usage?.total || (Number(llm.usage?.input || 0) + Number(llm.usage?.output || 0)));
+      if (llm.usage?.remaining !== null && llm.usage?.remaining !== undefined) run.usage.remaining = Number(llm.usage.remaining);
+      persistRun(run);
+      const raw = llm.text;
       let action;
       try { action = parseAction(raw); }
       catch (parseError) {
@@ -248,8 +300,18 @@ async function executeRun(run, task, previousJob = null) {
         messages.push({ role: "user", content: `Do not finish yet. This price/comparison task has only ${visitedSources.size} independent marketplace source(s): ${checked}. Browse at least one additional independent marketplace such as divar.ir, validate model years and trims, remove obvious outliers, then return a corrected answer with exact observed URLs.` });
         continue;
       }
+      if (action.action === "finish") {
+        const sources = Array.isArray(action.sources) ? action.sources.filter(Boolean) : [];
+        const resultParts = [action.answer || "The job completed without a detailed result."];
+        if (action.limitations) resultParts.push(`Limitations / open items\n${action.limitations}`);
+        if (sources.length) resultParts.push(`Sources\n${sources.join("\n")}`);
+        event(run, "response", "Final result", resultParts.join("\n\n"));
+        event(run, "summary", "Job summary", action.summary || String(action.answer || "Job completed.").slice(0, 600));
+        event(run, "next", "Suggested next step", action.next_step || "Continue this job with any additional detail or follow-up request.");
+        run.status = "completed";
+        break;
+      }
       event(run, action.action === "finish" ? "response" : "browser", action.reason || `Step ${step}: ${action.action}`, action.answer || action.question || action.url || action.text || "");
-      if (action.action === "finish") { run.status = "completed"; break; }
       if (action.action === "ask_user") { const answer = await askUser(run, action.question || "What additional information should I use?"); messages.push({ role: "user", content: `User answered: ${answer}` }); continue; }
       const control = state.controls.find(item => item.id === Number(action.id));
       const needsApproval = run.config.approvalPolicy === "all" || (run.config.approvalPolicy === "risky" && sensitive(action, control));

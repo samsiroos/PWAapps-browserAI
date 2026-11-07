@@ -102,8 +102,16 @@
                 <button data-prompt="Summarize the main pricing plans on a product website and identify the best value.">Summarize</button>
                 <button data-prompt="Find three available hotels for a weekend trip and compare location, rating, and price.">Compare</button>
               </div>
-              <button class="run-button" id="runButton"><span>Run agent</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+              <div class="primary-actions">
+                <button class="optimize-button" id="optimizeButton"><span>Optimize task</span><span aria-hidden="true">✦</span></button>
+                <button class="run-button" id="runButton"><span>Run agent</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+              </div>
             </div>
+          </div>
+          <div class="optimize-result" id="optimizeResult" hidden>
+            <div><span class="eyebrow">Optimized request</span><p>Review and edit the improved task before applying it.</p></div>
+            <textarea id="optimizedTask" rows="5"></textarea>
+            <div class="optimize-result-actions"><button id="cancelOptimize">Cancel</button><button id="applyOptimize">Replace task</button></div>
           </div>
         </div>
 
@@ -113,7 +121,10 @@
               <span class="status-dot" id="statusDot"></span>
               <div><p class="activity-label">Agent activity</p><h2 id="runTitle">Ready for a task</h2></div>
             </div>
-            <button class="stop-button" id="stopButton" hidden>Stop</button>
+            <div class="activity-actions">
+              <span class="token-usage" id="tokenUsage" title="Input + output tokens">0 tokens</span>
+              <button class="stop-button" id="stopButton" hidden>Stop</button>
+            </div>
           </div>
 
           <div class="empty-state" id="emptyState">

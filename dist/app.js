@@ -24,15 +24,18 @@ const demoSteps = [
 ];
 
 function toast(message){const el=$("toast");el.textContent=message;el.classList.add("show");clearTimeout(el._timer);el._timer=setTimeout(()=>el.classList.remove("show"),2600)}
+function formatTokens(value){return new Intl.NumberFormat().format(Number(value||0))}
+function updateUsage(usage={}){const input=Number(usage.input??usage.input_tokens??0),output=Number(usage.output??usage.output_tokens??0),total=Number(usage.total??usage.total_tokens??(input+output));const rawRemaining=usage.remaining??usage.remaining_tokens;const remaining=rawRemaining===null||rawRemaining===undefined?null:Number(rawRemaining);$("tokenUsage").textContent=`${formatTokens(total)} tokens${Number.isFinite(remaining)?` · ${formatTokens(remaining)} left`:""}`;$("tokenUsage").title=`Input: ${formatTokens(input)} · Output: ${formatTokens(output)} · Total: ${formatTokens(total)}${Number.isFinite(remaining)?` · Remaining: ${formatTokens(remaining)}`:""}`}
+function setTextWithLinks(element,text){const value=String(text||"");const pattern=/https?:\/\/[^\s<>"']+/g;let cursor=0,match;element.textContent="";while((match=pattern.exec(value))){if(match.index>cursor)element.append(document.createTextNode(value.slice(cursor,match.index)));let url=match[0],trail="";while(/[),.;!?\]]$/.test(url)){trail=url.slice(-1)+trail;url=url.slice(0,-1)}const link=document.createElement("a");link.href=url;link.textContent=url;link.target="_blank";link.rel="noopener noreferrer";element.append(link);if(trail)element.append(document.createTextNode(trail));cursor=match.index+match[0].length}if(cursor<value.length)element.append(document.createTextNode(value.slice(cursor)))}
 function delay(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
 function setStatus(type,title){$("statusDot").className="status-dot "+(type||"");$("runTitle").textContent=title}
 function addStep(kind,title,text){
-  const row=document.createElement("div");row.className="timeline-item "+(kind==="response"?"response":kind==="error"?"error":"");
-  const symbols={plan:"01",browser:"↗",observe:"◎",compare:"≋",response:"✓",error:"!",question:"?"};
+  const row=document.createElement("div");const cardKind=["response","error","summary","next"].includes(kind)?kind:"";row.className=`timeline-item ${cardKind}`;
+  const symbols={plan:"01",browser:"↗",observe:"◎",compare:"≋",response:"✓",summary:"Σ",next:"→",error:"!",question:"?"};
   row.innerHTML=`<div class="timeline-icon">${symbols[kind]||"·"}</div><div class="timeline-content"><span>${kind}</span><h3></h3><p></p></div>`;
-  row.querySelector("h3").textContent=title;row.querySelector("p").textContent=text;applyDirection(row.querySelector(".timeline-content"),`${title} ${text}`);$("timeline").appendChild(row);row.scrollIntoView({behavior:"smooth",block:"nearest"});
+  row.querySelector("h3").textContent=title;setTextWithLinks(row.querySelector("p"),text);applyDirection(row.querySelector(".timeline-content"),`${title} ${text}`);$("timeline").appendChild(row);row.scrollIntoView({behavior:"smooth",block:"nearest"});
 }
-function resetRun(){state.stopped=false;$("emptyState").hidden=true;$("timeline").hidden=false;$("timeline").innerHTML="";$("approvalCard").hidden=true;$("continueCard").hidden=true;$("stopButton").hidden=false;$("runButton").classList.add("running")}
+function resetRun(){state.stopped=false;$("emptyState").hidden=true;$("timeline").hidden=false;$("timeline").innerHTML="";$("approvalCard").hidden=true;$("continueCard").hidden=true;$("stopButton").hidden=false;$("runButton").classList.add("running");updateUsage()}
 function finishRun(){state.running=false;$("stopButton").hidden=true;$("runButton").classList.remove("running");setStatus("","Run complete");$("continueCard").hidden=!(state.localRuntime&&state.lastJobId);if(state.historyOpen)loadJobs()}
 function demoAnswer(task){return `I completed the research workflow for: “${task}”\n\nTop choices\n1. Keychron K2 — best overall balance of build quality, wireless flexibility, and value.\n2. Logitech K380 — best budget pick for portability and multi-device use.\n3. Royal Kludge RK84 — best feature set for users who want mechanical switches and customization.\n\nBefore buying, verify the live price, keyboard layout, and switch type on the seller’s page.`}
 
@@ -69,6 +72,7 @@ async function pollLocalRun(){
   if(!state.runId)return;
   try{
     const response=await fetch(`/api/runs/${state.runId}`);const run=await response.json();if(!response.ok)throw new Error(run.error||"Run unavailable");
+    updateUsage(run.usage);
     for(const item of run.events||[]){if(!state.seenEvents.has(item.id)){state.seenEvents.add(item.id);addStep(item.kind,item.title,item.text)}}
     if(run.waiting){state.waitingKind=run.waiting.kind||"approval";const question=state.waitingKind==="question";setStatus("waiting",question?"Waiting for your answer":"Waiting for your approval");$("approvalTitle").textContent=run.waiting.title;$("approvalText").textContent=run.waiting.detail;$("userAnswer").hidden=!question;$("denyButton").textContent=question?"Skip":"Deny";$("approveButton").textContent=question?"Send answer":"Approve action";applyDirection($("approvalCard"),`${run.waiting.title} ${run.waiting.detail}`);$("approvalCard").hidden=false;if(question&&!$("userAnswer").value)setTimeout(()=>$("userAnswer").focus(),50)}else {state.waitingKind=null;$("approvalCard").hidden=true;$("userAnswer").hidden=true}
     if(["completed","failed","stopped"].includes(run.status)){state.lastJobId=state.runId;finishRun();state.runId=null;return}
@@ -77,7 +81,7 @@ async function pollLocalRun(){
 }
 
 async function startRun(){
-  if(state.running)return;if(!configIsValid()){toast("Set up your AI provider first");openConfig(true);return}const task=$("taskInput").value.trim();if(!task){toast("Describe a task first");$("taskInput").focus();return}
+  if(state.running)return;if(!configIsValid()){toast("Set up your AI provider first");openConfig(true);return}const task=$("taskInput").value.trim();if(!task){toast("Describe a task first");$("taskInput").focus();return}$("optimizeResult").hidden=true;
   state.running=true;resetRun();setStatus("active","Agent is working");
   try{
     if(state.localRuntime){if(!$("apiKey").value.trim())throw new Error("Add the selected provider's API key first.");await startLocalRun(task)}
@@ -86,7 +90,13 @@ async function startRun(){
 }
 function setConnection(live){const badge=$("connectionBadge");badge.classList.toggle("live",live);badge.querySelector("span").textContent=live?"API connected":"Demo mode"}
 
-function newJob(){if(state.running){toast("Stop the current job before starting a new one");return}state.runId=null;state.lastJobId=null;state.seenEvents.clear();$("taskInput").value="";applyDirection($("taskInput"),"");$("timeline").innerHTML="";$("timeline").hidden=true;$("emptyState").hidden=false;$("approvalCard").hidden=true;$("continueCard").hidden=true;setStatus("","Ready for a task");$("taskInput").focus()}
+async function optimizeCurrentTask(){
+  if(state.running){toast("Wait for the current job to finish");return}if(!state.localRuntime){toast("Task optimization is available in the local app");return}if(!configIsValid()){openConfig(true);return}const task=$("taskInput").value.trim();if(!task){toast("Describe a task first");$("taskInput").focus();return}
+  const button=$("optimizeButton"),label=button.querySelector("span");button.disabled=true;label.textContent="Optimizing…";
+  try{const response=await fetch("/api/optimize",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({task,provider:$("provider").value,endpoint:$("apiEndpoint").value.trim(),apiKey:$("apiKey").value.trim(),model:$("modelName").value.trim()})});const data=await response.json();if(!response.ok)throw new Error(data.error||"Optimization failed");$("optimizedTask").value=data.optimized;applyDirection($("optimizedTask"),data.optimized);$("optimizeResult").hidden=false;updateUsage(data.usage);$("optimizedTask").focus()}catch(error){toast(error.message)}finally{button.disabled=false;label.textContent="Optimize task"}
+}
+
+function newJob(){if(state.running){toast("Stop the current job before starting a new one");return}state.runId=null;state.lastJobId=null;state.seenEvents.clear();$("taskInput").value="";applyDirection($("taskInput"),"");$("optimizeResult").hidden=true;$("timeline").innerHTML="";$("timeline").hidden=true;$("emptyState").hidden=false;$("approvalCard").hidden=true;$("continueCard").hidden=true;updateUsage();setStatus("","Ready for a task");$("taskInput").focus()}
 function openHistory(){state.historyOpen=true;$("historyPanel").hidden=false;$("historyBackdrop").hidden=false;loadJobs()}
 function closeHistory(){state.historyOpen=false;$("historyPanel").hidden=true;$("historyBackdrop").hidden=true}
 async function loadJobs(){
@@ -95,16 +105,17 @@ async function loadJobs(){
 }
 function jobCard(job){
   const card=document.createElement("article");card.className="job-item";card.innerHTML='<div class="job-item-top"><h3></h3><span class="job-status"></span></div><p class="job-meta"></p><div class="job-actions"><button data-action="open">Open</button><button data-action="rerun">Rerun</button><button class="delete-job" data-action="delete">Delete</button></div>';
-  card.querySelector("h3").textContent=job.task;applyDirection(card.querySelector("h3"),job.task);const badge=card.querySelector(".job-status");badge.textContent=job.status;badge.classList.add(job.status);card.querySelector(".job-meta").textContent=`${job.provider||"custom"}${job.model?` · ${job.model}`:" · auto"} · ${new Date(Number(job.created_at)).toLocaleString()}`;
+  card.querySelector("h3").textContent=job.task;applyDirection(card.querySelector("h3"),job.task);const badge=card.querySelector(".job-status");badge.textContent=job.status;badge.classList.add(job.status);card.querySelector(".job-meta").textContent=`${job.provider||"custom"}${job.model?` · ${job.model}`:" · auto"} · ${formatTokens(job.total_tokens)} tokens · ${new Date(Number(job.created_at)).toLocaleString()}`;
   card.querySelector('[data-action="open"]').addEventListener("click",()=>openSavedJob(job.id));card.querySelector('[data-action="rerun"]').addEventListener("click",()=>rerunJob(job.id));card.querySelector('[data-action="delete"]').addEventListener("click",()=>deleteJob(job.id,job.task));return card;
 }
 async function getJob(id){const response=await fetch(`/api/jobs/${id}`,{cache:"no-store"});const job=await response.json();if(!response.ok)throw new Error(job.error||"Could not load job");return job}
-async function openSavedJob(id){try{const job=await getJob(id);closeHistory();state.lastJobId=job.id;$("taskInput").value=job.task;applyDirection($("taskInput"),job.task);$("emptyState").hidden=true;$("timeline").hidden=false;$("timeline").innerHTML="";(job.events||[]).forEach(item=>addStep(item.kind,item.title,item.text));setStatus("",`Saved job · ${job.status}`);$("continueCard").hidden=!(["completed","failed","stopped","interrupted"].includes(job.status)&&state.localRuntime)}catch(error){toast(error.message)}}
+async function openSavedJob(id){try{const job=await getJob(id);closeHistory();state.lastJobId=job.id;$("taskInput").value=job.task;applyDirection($("taskInput"),job.task);$("emptyState").hidden=true;$("timeline").hidden=false;$("timeline").innerHTML="";(job.events||[]).forEach(item=>addStep(item.kind,item.title,item.text));updateUsage(job);setStatus("",`Saved job · ${job.status}`);$("continueCard").hidden=!(["completed","failed","stopped","interrupted"].includes(job.status)&&state.localRuntime)}catch(error){toast(error.message)}}
 async function continueJob(){const followUp=$("continueInput").value.trim();if(!followUp){toast("Describe the next part of the job");$("continueInput").focus();return}if(!state.lastJobId||!state.localRuntime){toast("Open a saved local job first");return}if(!configIsValid()){openConfig(true);return}state.running=true;resetRun();setStatus("active","Continuing previous job");try{await startLocalRun(followUp,state.lastJobId);$("continueInput").value=""}catch(error){addStep("error","Could not continue job",error.message);finishRun()}}
 async function rerunJob(id){if(state.running){toast("Stop the current job before rerunning another");return}try{const job=await getJob(id);$("taskInput").value=job.task;$("provider").value=job.provider||$("provider").value;$("apiEndpoint").value=job.endpoint||$("apiEndpoint").value;$("modelName").value=job.model||"";saveConfig();closeHistory();startRun()}catch(error){toast(error.message)}}
 async function deleteJob(id,task){if(!confirm(`Delete this saved job?\n\n${task}`))return;try{const response=await fetch(`/api/jobs/${id}`,{method:"DELETE"});const data=await response.json();if(!response.ok)throw new Error(data.error||"Could not delete job");toast("Job deleted");loadJobs()}catch(error){toast(error.message)}}
 
 $("runButton").addEventListener("click",startRun);$("taskInput").addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key==="Enter")startRun()});
+$("optimizeButton").addEventListener("click",optimizeCurrentTask);$("cancelOptimize").addEventListener("click",()=>$("optimizeResult").hidden=true);$("applyOptimize").addEventListener("click",()=>{const value=$("optimizedTask").value.trim();if(!value){toast("Optimized task is empty");return}$("taskInput").value=value;applyDirection($("taskInput"),value);$("optimizeResult").hidden=true;$("taskInput").focus();toast("Task replaced — you can still edit it")});$("optimizedTask").addEventListener("input",e=>applyDirection(e.currentTarget,e.currentTarget.value));
 $("taskInput").addEventListener("input",e=>applyDirection(e.currentTarget,e.currentTarget.value));applyDirection($("taskInput"),$("taskInput").value);
 $("stopButton").addEventListener("click",async()=>{state.stopped=true;state.running=false;if(state.runId)await fetch(`/api/runs/${state.runId}/stop`,{method:"POST"});if(state.pendingResolve)state.pendingResolve(false);$("approvalCard").hidden=true;if(!state.localRuntime)addStep("error","Run stopped","The run was stopped by you.");finishRun()});
 async function decide(approved){if(state.runId){const answer=state.waitingKind==="question"&&approved?$("userAnswer").value.trim():"";if(state.waitingKind==="question"&&approved&&!answer){toast("Type an answer or choose Skip");return}await fetch(`/api/runs/${state.runId}/decision`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(answer?{answer}:{approved})});$("approvalCard").hidden=true;$("userAnswer").value="";return}if(state.pendingResolve){state.pendingResolve(approved);state.pendingResolve=null;setStatus("active",approved?"Agent is working":"Finishing without that action");if(approved)addStep("browser","Action approved","Opening the shortlisted pages to verify details.")}}
